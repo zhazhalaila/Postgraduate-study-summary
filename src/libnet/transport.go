@@ -15,7 +15,7 @@ const (
 
 var (
 	// ErrTransportStop is returned when stop channel is closed
-	ErrTransportStop = errors.New("Transport shutdown")
+	ErrTransportStop = errors.New("transport shutdown")
 )
 
 type NetworkTransport struct {
@@ -32,11 +32,13 @@ type NetworkTransport struct {
 	// Send data to consensus module
 	consumeCh chan interface{}
 	// Read data from consensus module and broadcast data to all peers
-	peerBroadcastCh chan interface{}
-	// Read consens result from consensus module
-	resultCh  chan interface{}
-	stopCh    chan struct{}
-	releaseCh chan struct{}
+	outBroadcastCh chan interface{}
+	// Read data from consensus module and send data to specific peer
+	outSingleCh chan peerData
+	// Read consens result from consensus module and write result to client
+	resultCh chan interface{}
+
+	stopCh chan struct{}
 }
 
 type remoteConn struct {
@@ -51,6 +53,11 @@ type peer struct {
 	enc  *json.Encoder
 }
 
+type peerData struct {
+	peerId int
+	msg    interface{}
+}
+
 func NewNetworkTransport(logger *log.Logger, port string) *NetworkTransport {
 	nt := &NetworkTransport{}
 	nt.logger = logger
@@ -59,9 +66,10 @@ func NewNetworkTransport(logger *log.Logger, port string) *NetworkTransport {
 	nt.logOutCh = make(chan string, 100)
 	nt.peerRegisterCh = make(chan peer, 100)
 	nt.consumeCh = make(chan interface{}, 10000)
-	nt.peerBroadcastCh = make(chan interface{}, 10000)
+	nt.outBroadcastCh = make(chan interface{}, 10000)
+	nt.outSingleCh = make(chan peerData, 10000)
+	nt.resultCh = make(chan interface{}, 100)
 	nt.stopCh = make(chan struct{})
-	nt.releaseCh = make(chan struct{})
 
 	go nt.inComingManger()
 	go nt.peerManger()
@@ -90,8 +98,57 @@ func (nt *NetworkTransport) Start() {
 				nt.logger.Fatal("accept error: ", err)
 			}
 		}
+		nt.logger.Printf("Accept new connection from [%s].\n", conn.RemoteAddr().String())
 		go nt.handleConn(conn)
 	}
+}
+
+// Stop network
+func (nt *NetworkTransport) Exit() {
+	close(nt.stopCh)
+}
+
+// Read data from remote connection
+func (nt *NetworkTransport) Consume() <-chan interface{} {
+	return nt.consumeCh
+}
+
+// Consensu module will use stopped func to check network whether closed or not
+func (nt *NetworkTransport) Stopped() <-chan struct{} {
+	return nt.stopCh
+}
+
+// Broadcast data to all peers
+func (nt *NetworkTransport) Broadcast(msg interface{}) {
+	select {
+	case <-nt.stopCh:
+		return
+	case nt.outBroadcastCh <- msg:
+	}
+}
+
+// Send data to single peer
+func (nt *NetworkTransport) SendToPeer(peerId int, msg interface{}) {
+	select {
+	case <-nt.stopCh:
+		return
+	case nt.outSingleCh <- peerData{peerId: peerId, msg: msg}:
+	}
+}
+
+// Connect all remote peers
+func (nt *NetworkTransport) ConnectAll(ipAddrs []string) error {
+	for id, addr := range ipAddrs {
+		conn, err := net.Dial("tcp", addr)
+		if err != nil {
+			nt.logger.Printf("Connect to [Peer:%d] failed.\n", id)
+			return err
+		}
+		w := bufio.NewWriterSize(conn, bufSize)
+		enc := json.NewEncoder(w)
+		nt.peerRegisterCh <- peer{id: id, conn: conn, w: w, enc: enc}
+	}
+	return nil
 }
 
 // inComing manger mange client state and send response to client
@@ -132,20 +189,41 @@ func (nt *NetworkTransport) peerManger() {
 				peers[peer.id] = peer
 			}
 
-		case msg := <-nt.peerBroadcastCh:
+		case msg := <-nt.outBroadcastCh:
 			for id, peer := range peers {
-				if err := peer.enc.Encode(msg); err != nil {
-					nt.logger.Printf("Marshal data (send to peer:%d) error: %s.\n", id, err.Error())
+				if err := nt.writeDataToPeer(peer.w, peer.enc, msg); err != nil {
+					nt.logger.Printf("Send data to [Peer:%d] error : %s.\n", id, err.Error())
+					peer.conn.Close()
+					delete(peers, id)
 				}
-				if err := peer.w.Flush(); err != nil {
-					nt.logger.Printf("Send data to peer:%d error: %s.\n", id, err.Error())
+			}
+
+		case peerData := <-nt.outSingleCh:
+			if peer, ok := peers[peerData.peerId]; ok {
+				if err := nt.writeDataToPeer(peer.w, peer.enc, peerData.msg); err != nil {
+					nt.logger.Printf("Send data to [Peer:%d] error : %s.\n", peerData.peerId, err.Error())
+					peer.conn.Close()
+					delete(peers, peerData.peerId)
 				}
 			}
 		}
-
 	}
 }
 
+// using Flush() func write data immediately
+func (nt *NetworkTransport) writeDataToPeer(w *bufio.Writer, enc *json.Encoder, msg interface{}) error {
+	if err := enc.Encode(msg); err != nil {
+		return err
+	}
+
+	if err := w.Flush(); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// if new connect has been created cache it
 func (nt *NetworkTransport) handleConn(conn net.Conn) {
 	defer func() {
 		nt.logOutCh <- conn.RemoteAddr().String()
@@ -171,6 +249,7 @@ func (nt *NetworkTransport) handleConn(conn net.Conn) {
 	}
 }
 
+// handle command
 func (nt *NetworkTransport) handleCommand(r *bufio.Reader, dec *json.Decoder) error {
 	var req interface{}
 
