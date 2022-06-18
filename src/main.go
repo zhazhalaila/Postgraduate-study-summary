@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 
+	"github.com/zhazhalaila/PipelineBFT/src/consensus"
 	"github.com/zhazhalaila/PipelineBFT/src/libnet"
 )
 
@@ -26,6 +27,10 @@ func main() {
 	logger.Print("Start server.")
 
 	// Create and start network
-	nt := libnet.NewNetworkTransport(logger, *port)
-	nt.Start()
+	transport := libnet.NewNetworkTransport(logger, *port)
+	// Create new consensus module
+	cm := consensus.MakeConsensusModule(logger, transport)
+	cm.Run()
+	// Start network
+	transport.Start()
 }

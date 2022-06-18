@@ -7,6 +7,8 @@ import (
 	"log"
 	"math"
 	"net"
+
+	"github.com/zhazhalaila/PipelineBFT/src/message"
 )
 
 const (
@@ -251,11 +253,32 @@ func (nt *NetworkTransport) handleConn(conn net.Conn) {
 
 // handle command
 func (nt *NetworkTransport) handleCommand(r *bufio.Reader, dec *json.Decoder) error {
-	var req interface{}
-
-	if err := dec.Decode(req); err != nil {
+	// Get the msg type
+	msgType, err := r.ReadByte()
+	if err != nil {
 		return err
 	}
+
+	log.Println("Transport read type: ", msgType)
+
+	var req interface{}
+
+	switch msgType {
+	case message.PreprepareType:
+		var preprepare message.PrePrepare
+		if err := dec.Decode(&preprepare); err != nil {
+			return err
+		}
+		req = preprepare
+	case message.PrepareType:
+		var prepare message.Prepare
+		if err := dec.Decode(&prepare); err != nil {
+			return err
+		}
+		req = prepare
+	}
+
+	log.Println("Tansaport: ", req)
 
 	select {
 	case <-nt.stopCh:

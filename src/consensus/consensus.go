@@ -4,6 +4,7 @@ import (
 	"log"
 
 	"github.com/zhazhalaila/PipelineBFT/src/libnet"
+	"github.com/zhazhalaila/PipelineBFT/src/message"
 )
 
 type ConsensusModule struct {
@@ -20,19 +21,30 @@ func MakeConsensusModule(logger *log.Logger,
 	cm.transport = transport
 	cm.epoch = 0
 	cm.epochCount = 0
+	return cm
+}
+
+func (cm *ConsensusModule) Run() {
 	go cm.readDataFromTransport()
-	return nil
 }
 
 func (cm *ConsensusModule) readDataFromTransport() {
 L:
 	for {
 		select {
-		case <-cm.transport.Consume():
-			////
+		case cmd := <-cm.transport.Consume():
+			log.Println("Consensus: ", cmd)
+			cm.handleCommand(cmd)
 		case <-cm.transport.Stopped():
 			break L
 		}
 	}
 	cm.logger.Println("Consensus module break")
+}
+
+func (cm *ConsensusModule) handleCommand(cmd interface{}) {
+	switch cmd.(type) {
+	case message.PrePrepare:
+		log.Println(cmd.(message.PrePrepare).Initiator)
+	}
 }

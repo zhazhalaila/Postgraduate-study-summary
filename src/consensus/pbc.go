@@ -22,6 +22,8 @@ type PBC struct {
 	n                 int
 	f                 int
 	id                int
+	epoch             int
+	r                 int
 	fromInitiator     int
 	preparedThreshold int
 
@@ -37,22 +39,31 @@ type PBC struct {
 	// public key for all peers
 	pubKeys map[int]*secp256k1.PublicKey
 
+	// done
+	done chan struct{}
+	// stop pbc instance
+	stop chan bool
 	// read data from channel
-	inCh chan message.PBCWrapper
+	inCh chan interface{}
+	// return result to epoch module
+	epochEvent chan Event
 }
 
 func MakePBC(logger *log.Logger,
 	transport *libnet.NetworkTransport,
-	n, f, id, fromInitiator int,
+	n, f, id, epoch, r, fromInitiator int,
 	pubKey *secp256k1.PublicKey,
 	priKey *secp256k1.PrivateKey,
-	pubKeys map[int]*secp256k1.PublicKey) *PBC {
+	pubKeys map[int]*secp256k1.PublicKey,
+	epochEvent chan Event) *PBC {
 	pbc := &PBC{}
 	pbc.logger = logger
 	pbc.transport = transport
 	pbc.n = n
 	pbc.f = f
 	pbc.id = id
+	pbc.epoch = epoch
+	pbc.r = r
 	pbc.fromInitiator = fromInitiator
 	pbc.preparedThreshold = 2*pbc.f + 1
 	pbc.txs = make(map[[32]byte]*[][]byte)
@@ -60,26 +71,43 @@ func MakePBC(logger *log.Logger,
 	pbc.pubKey = pubKey
 	pbc.priKey = priKey
 	pbc.pubKeys = pubKeys
-	pbc.inCh = make(chan message.PBCWrapper)
+	pbc.done = make(chan struct{})
+	pbc.stop = make(chan bool)
+	pbc.inCh = make(chan interface{}, pbc.n*pbc.n)
+	pbc.epochEvent = epochEvent
 	go pbc.run()
 	return pbc
 }
 
+func (pbc *PBC) Input(msg interface{}) {
+	pbc.inCh <- msg
+}
+
+func (pbc *PBC) Stop() {
+	close(pbc.stop)
+}
+
 func (pbc *PBC) run() {
+	defer func() {
+		pbc.done <- struct{}{}
+	}()
+
 	for {
 		select {
+		case <-pbc.stop:
+			return
 		case msg := <-pbc.inCh:
 			pbc.handleCommand(msg)
 		}
 	}
 }
 
-func (pbc *PBC) handleCommand(msg message.PBCWrapper) {
-	switch msg.Msg.(type) {
+func (pbc *PBC) handleCommand(msg interface{}) {
+	switch msg.(type) {
 	case message.PrePrepare:
-		pbc.handlePrePrepare(msg.Msg.(message.PrePrepare))
+		pbc.handlePrePrepare(msg.(message.PrePrepare))
 	case message.Prepare:
-		pbc.handlePrepare(msg.Msg.(message.Prepare))
+		pbc.handlePrepare(msg.(message.Prepare))
 	}
 }
 
@@ -121,20 +149,19 @@ func (pbc *PBC) handlePrePrepare(prePrepare message.PrePrepare) {
 		return
 	}
 
-	prepareMsg := message.Prepare{
-		Epoch:      prePrepare.Epoch,
-		Count:      prePrepare.Count,
-		MerkleRoot: prePrepare.MerkleRoot,
-		Voter:      pbc.id,
-	}
-
 	signature, err := pbc.priKey.Sign(prePrepare.MerkleRoot[:])
 	if err != nil {
 		pbc.logger.Println(err)
 		return
 	}
 
-	prepareMsg.VoteSignature = signature.Serialize()
+	prepareMsg := message.Prepare{
+		Epoch:         prePrepare.Epoch,
+		Count:         prePrepare.Count,
+		MerkleRoot:    prePrepare.MerkleRoot,
+		Voter:         pbc.id,
+		VoteSignature: signature.Serialize(),
+	}
 
 	pbc.txs[prePrepare.MerkleRoot] = prePrepare.Transactions
 
@@ -158,9 +185,32 @@ func (pbc *PBC) handlePrepare(prepare message.Prepare) {
 	}
 	pbc.sigSets[prepare.MerkleRoot][prepare.Voter] = prepare.VoteSignature
 
-	for _, collected := range pbc.sigSets {
+	for hash, collected := range pbc.sigSets {
 		if len(collected) == 2*pbc.f+1 {
-			// notify epoch module
+			proofs := make([][]byte, 2*pbc.f+1)
+			for _, sig := range collected {
+				proofs = append(proofs, sig)
+			}
+
+			// generate qc
+			qc := message.QuorumCert{}
+			qc.Signatures = proofs
+			qc.Proposer = pbc.fromInitiator
+			qc.Epoch = pbc.epoch
+			qc.R = pbc.r
+			qc.Hash = hash[:]
+
+			// send qc to epoch module
+			select {
+			case <-pbc.stop:
+				return
+			case pbc.epochEvent <- Event{
+				eventType:  PBCOUTPUT,
+				r:          pbc.r,
+				instanceId: pbc.fromInitiator,
+				qc:         qc,
+			}:
+			}
 		} else {
 			return
 		}
