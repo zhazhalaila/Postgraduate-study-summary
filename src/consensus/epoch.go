@@ -9,8 +9,6 @@ import (
 const (
 	PBCOUTPUT = iota
 	PRODUCER  = iota
-	ABAOUTPUT = iota
-	ABASTOP   = iota
 )
 
 type Event struct {
@@ -29,8 +27,8 @@ type Epoch struct {
 	n  int
 	f  int
 	id int
-	// k reference how many transactions a node can broadcast concurrently in each epoch
-	k int
+	// k reference how many rounds concurrently process in each epoch
+	maxRound int
 
 	path *Path
 	pbcs map[int]map[int]*PBC
@@ -42,21 +40,21 @@ type Epoch struct {
 
 func NewEpoch(
 	logger *log.Logger,
-	n, f, id, k int,
+	n, f, id, maxRound int,
 ) *Epoch {
 	e := &Epoch{}
 	e.logger = logger
 	e.n = n
 	e.f = f
 	e.id = id
-	e.k = k
-	e.path = NewPath(e.n, e.f, e.k)
+	e.maxRound = maxRound
+	e.path = NewPath(e.n, e.f, e.maxRound)
 	e.pbcs = make(map[int]map[int]*PBC, e.n)
-	for i := 0; i < k; i++ {
-		e.pbcs[i] = make(map[int]*PBC, e.k)
+	for i := 0; i < maxRound; i++ {
+		e.pbcs[i] = make(map[int]*PBC, e.n)
 	}
-	e.event = make(chan Event, e.n*e.k)
-	e.inCh = make(chan interface{}, e.n*e.n*e.k)
+	e.event = make(chan Event, e.n*e.maxRound)
+	e.inCh = make(chan interface{}, e.n*e.n*e.maxRound)
 	go e.run()
 	return e
 }
@@ -68,14 +66,14 @@ L:
 		case <-e.stop:
 			break L
 		case msg := <-e.inCh:
-			e.handleCommand(msg)
+			e.handleMsg(msg)
 		case event := <-e.event:
 			e.handleEvent(event)
 		}
 	}
 }
 
-func (e *Epoch) handleCommand(msg interface{}) {
+func (e *Epoch) handleMsg(msg interface{}) {
 }
 
 func (e *Epoch) handleEvent(event Event) {

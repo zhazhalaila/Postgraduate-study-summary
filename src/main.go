@@ -12,6 +12,10 @@ import (
 func main() {
 	logPath := flag.String("path", "log.txt", "log file path")
 	port := flag.String("port", ":8000", "network port")
+	n := flag.Int("n", 4, "total node number")
+	f := flag.Int("f", 1, "byzantine node number")
+	id := flag.Int("id", 0, "assign a unique number to different server")
+	maxRound := flag.Int("mr", 1, "max round for each epoch")
 	flag.Parse()
 
 	prefixLogPath := "../" + *logPath
@@ -29,7 +33,7 @@ func main() {
 	// Create and start network
 	transport := libnet.NewNetworkTransport(logger, *port)
 	// Create new consensus module
-	cm := consensus.MakeConsensusModule(logger, transport)
+	cm := consensus.MakeConsensusModule(logger, transport, *n, *f, *id, *maxRound)
 	cm.Run()
 	// Start network
 	transport.Start()

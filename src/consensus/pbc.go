@@ -165,7 +165,7 @@ func (pbc *PBC) handlePrePrepare(prePrepare message.PrePrepare) {
 
 	pbc.txs[prePrepare.MerkleRoot] = prePrepare.Transactions
 
-	pbc.transport.Broadcast(prepareMsg)
+	pbc.transport.Broadcast(message.PrepareType, prepareMsg)
 }
 
 func (pbc *PBC) handlePrepare(prepare message.Prepare) {

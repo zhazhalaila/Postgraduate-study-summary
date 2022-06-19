@@ -10,14 +10,17 @@ import (
 )
 
 func writedata(w *bufio.Writer, enc *json.Encoder, msgType uint8, msg interface{}) {
+	// Write request type
 	if err := w.WriteByte(message.PreprepareType); err != nil {
 		log.Fatal(err)
 	}
 
+	// Send the request
 	if err := enc.Encode(msg); err != nil {
 		log.Fatal(err)
 	}
 
+	// Flush
 	if err := w.Flush(); err != nil {
 		log.Fatal(err)
 	}

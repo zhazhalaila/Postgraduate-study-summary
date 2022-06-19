@@ -32,15 +32,20 @@ type NetworkTransport struct {
 	peerRegisterCh chan peer
 
 	// Send data to consensus module
-	consumeCh chan interface{}
+	consumeCh chan Request
 	// Read data from consensus module and broadcast data to all peers
-	outBroadcastCh chan interface{}
+	outBroadcastCh chan broadcastData
 	// Read data from consensus module and send data to specific peer
 	outSingleCh chan peerData
 	// Read consens result from consensus module and write result to client
 	resultCh chan interface{}
 
 	stopCh chan struct{}
+}
+
+type Request struct {
+	Epoch int
+	Msg   interface{}
 }
 
 type remoteConn struct {
@@ -55,9 +60,15 @@ type peer struct {
 	enc  *json.Encoder
 }
 
+type broadcastData struct {
+	msgType uint8
+	msg     interface{}
+}
+
 type peerData struct {
-	peerId int
-	msg    interface{}
+	peerId  int
+	msgType uint8
+	msg     interface{}
 }
 
 func NewNetworkTransport(logger *log.Logger, port string) *NetworkTransport {
@@ -67,8 +78,8 @@ func NewNetworkTransport(logger *log.Logger, port string) *NetworkTransport {
 	nt.logInCh = make(chan remoteConn, 100)
 	nt.logOutCh = make(chan string, 100)
 	nt.peerRegisterCh = make(chan peer, 100)
-	nt.consumeCh = make(chan interface{}, 10000)
-	nt.outBroadcastCh = make(chan interface{}, 10000)
+	nt.consumeCh = make(chan Request, 10000)
+	nt.outBroadcastCh = make(chan broadcastData, 10000)
 	nt.outSingleCh = make(chan peerData, 10000)
 	nt.resultCh = make(chan interface{}, 100)
 	nt.stopCh = make(chan struct{})
@@ -111,7 +122,7 @@ func (nt *NetworkTransport) Exit() {
 }
 
 // Read data from remote connection
-func (nt *NetworkTransport) Consume() <-chan interface{} {
+func (nt *NetworkTransport) Consume() <-chan Request {
 	return nt.consumeCh
 }
 
@@ -121,11 +132,11 @@ func (nt *NetworkTransport) Stopped() <-chan struct{} {
 }
 
 // Broadcast data to all peers
-func (nt *NetworkTransport) Broadcast(msg interface{}) {
+func (nt *NetworkTransport) Broadcast(msgType uint8, msg interface{}) {
 	select {
 	case <-nt.stopCh:
 		return
-	case nt.outBroadcastCh <- msg:
+	case nt.outBroadcastCh <- broadcastData{msgType: msgType, msg: msg}:
 	}
 }
 
@@ -191,21 +202,21 @@ func (nt *NetworkTransport) peerManger() {
 				peers[peer.id] = peer
 			}
 
-		case msg := <-nt.outBroadcastCh:
+		case broadcastMsg := <-nt.outBroadcastCh:
 			for id, peer := range peers {
-				if err := nt.writeDataToPeer(peer.w, peer.enc, msg); err != nil {
+				if err := nt.writeDataToPeer(peer.w, peer.enc, broadcastMsg.msgType, broadcastMsg.msg); err != nil {
 					nt.logger.Printf("Send data to [Peer:%d] error : %s.\n", id, err.Error())
 					peer.conn.Close()
 					delete(peers, id)
 				}
 			}
 
-		case peerData := <-nt.outSingleCh:
-			if peer, ok := peers[peerData.peerId]; ok {
-				if err := nt.writeDataToPeer(peer.w, peer.enc, peerData.msg); err != nil {
-					nt.logger.Printf("Send data to [Peer:%d] error : %s.\n", peerData.peerId, err.Error())
+		case peerMsg := <-nt.outSingleCh:
+			if peer, ok := peers[peerMsg.peerId]; ok {
+				if err := nt.writeDataToPeer(peer.w, peer.enc, peerMsg.msgType, peerMsg.msg); err != nil {
+					nt.logger.Printf("Send data to [Peer:%d] error : %s.\n", peerMsg.peerId, err.Error())
 					peer.conn.Close()
-					delete(peers, peerData.peerId)
+					delete(peers, peerMsg.peerId)
 				}
 			}
 		}
@@ -213,11 +224,21 @@ func (nt *NetworkTransport) peerManger() {
 }
 
 // using Flush() func write data immediately
-func (nt *NetworkTransport) writeDataToPeer(w *bufio.Writer, enc *json.Encoder, msg interface{}) error {
+func (nt *NetworkTransport) writeDataToPeer(w *bufio.Writer,
+	enc *json.Encoder,
+	msgType uint8,
+	msg interface{}) error {
+	// Write msg type
+	if err := w.WriteByte(msgType); err != nil {
+		return err
+	}
+
+	// Send the msg
 	if err := enc.Encode(msg); err != nil {
 		return err
 	}
 
+	// Flush
 	if err := w.Flush(); err != nil {
 		return err
 	}
@@ -261,7 +282,7 @@ func (nt *NetworkTransport) handleCommand(r *bufio.Reader, dec *json.Decoder) er
 
 	log.Println("Transport read type: ", msgType)
 
-	var req interface{}
+	var req Request
 
 	switch msgType {
 	case message.PreprepareType:
@@ -269,13 +290,15 @@ func (nt *NetworkTransport) handleCommand(r *bufio.Reader, dec *json.Decoder) er
 		if err := dec.Decode(&preprepare); err != nil {
 			return err
 		}
-		req = preprepare
+		req.Epoch = preprepare.Epoch
+		req.Msg = preprepare
 	case message.PrepareType:
 		var prepare message.Prepare
 		if err := dec.Decode(&prepare); err != nil {
 			return err
 		}
-		req = prepare
+		req.Epoch = prepare.Epoch
+		req.Msg = prepare
 	}
 
 	log.Println("Tansaport: ", req)
