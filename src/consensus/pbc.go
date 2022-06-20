@@ -157,7 +157,7 @@ func (pbc *PBC) handlePrePrepare(prePrepare message.PrePrepare) {
 
 	prepareMsg := message.Prepare{
 		Epoch:         prePrepare.Epoch,
-		Count:         prePrepare.Count,
+		Round:         prePrepare.Round,
 		MerkleRoot:    prePrepare.MerkleRoot,
 		Voter:         pbc.id,
 		VoteSignature: signature.Serialize(),

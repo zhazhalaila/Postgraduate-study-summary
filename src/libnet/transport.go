@@ -44,8 +44,10 @@ type NetworkTransport struct {
 }
 
 type Request struct {
-	Epoch int
-	Msg   interface{}
+	Epoch     int
+	Round     int
+	Initiator int
+	Msg       interface{}
 }
 
 type remoteConn struct {
@@ -291,6 +293,8 @@ func (nt *NetworkTransport) handleCommand(r *bufio.Reader, dec *json.Decoder) er
 			return err
 		}
 		req.Epoch = preprepare.Epoch
+		req.Round = preprepare.Round
+		req.Initiator = preprepare.Initiator
 		req.Msg = preprepare
 	case message.PrepareType:
 		var prepare message.Prepare
@@ -298,6 +302,8 @@ func (nt *NetworkTransport) handleCommand(r *bufio.Reader, dec *json.Decoder) er
 			return err
 		}
 		req.Epoch = prepare.Epoch
+		req.Round = prepare.Round
+		req.Initiator = prepare.Initiator
 		req.Msg = prepare
 	}
 

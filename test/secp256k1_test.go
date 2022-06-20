@@ -1,4 +1,4 @@
-package main
+package test
 
 import (
 	"bytes"
@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"io/ioutil"
 	"log"
+	"testing"
 
 	"github.com/decred/dcrd/dcrec/secp256k1"
 )
@@ -28,7 +29,7 @@ func decodeHex(hexStr string) []byte {
 	return b
 }
 
-func main() {
+func TestSecpK1(t *testing.T) {
 	data, err := ioutil.ReadFile("../replica.json")
 	if err != nil {
 		log.Fatal(err)

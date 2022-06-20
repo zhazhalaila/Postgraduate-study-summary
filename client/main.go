@@ -39,7 +39,7 @@ func main() {
 	// create new message
 	msg := message.PrePrepare{
 		Epoch:     0,
-		Count:     1,
+		Round:     1,
 		Initiator: 2,
 	}
 
