@@ -29,7 +29,7 @@ func decodeHex(hexStr string) []byte {
 
 func readKey() ([]key, error) {
 	// Read key-pair from file.
-	data, err := ioutil.ReadFile("../../replica.json")
+	data, err := ioutil.ReadFile("../replica.json")
 	if err != nil {
 		return nil, err
 	}

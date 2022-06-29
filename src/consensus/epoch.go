@@ -84,7 +84,9 @@ func MakeEpoch(
 		e.pbcs[i] = make(map[int]*PBC, e.n)
 		for j := 0; j < n; j++ {
 			e.pbcs[i][j] = MakePBC(
-				e.logger, e.transport, e.n, e.f, e.id, e.epoch, j, j, e.pubKey, e.priKey, e.pubKeys, e.event)
+				e.logger, e.transport,
+				e.n, e.f, e.id, e.epoch, j, j,
+				e.pubKey, e.priKey, e.pubKeys, e.event)
 		}
 	}
 
@@ -116,7 +118,7 @@ L:
 
 func (e *Epoch) handleMsg(epochReq EpochReq) {
 	switch epochReq.msg.(type) {
-	case message.PrePrepare, message.Prepare:
+	case message.PrePrepare, message.Prepare, message.NewTransaction:
 		e.pbcs[epochReq.round][epochReq.initiator].Input(epochReq.msg)
 	}
 }

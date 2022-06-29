@@ -184,10 +184,9 @@ func (nt *NetworkTransport) inComingManger() {
 
 		case msg := <-nt.resultCh:
 			inConns[msg.(string)].enc.Encode(msg)
-
-		default:
-			continue
 		}
+
+		// Fix the problem of high CPU utilization
 	}
 }
 
@@ -287,6 +286,9 @@ func (nt *NetworkTransport) handleCommand(r *bufio.Reader, dec *json.Decoder) er
 	var req Request
 
 	switch msgType {
+	// case message.NewTransactionsType:
+	// 	var newTxs message.NewTransaction
+
 	case message.PreprepareType:
 		var preprepare message.PrePrepare
 		if err := dec.Decode(&preprepare); err != nil {
@@ -296,6 +298,7 @@ func (nt *NetworkTransport) handleCommand(r *bufio.Reader, dec *json.Decoder) er
 		req.Round = preprepare.Round
 		req.Initiator = preprepare.Initiator
 		req.Msg = preprepare
+
 	case message.PrepareType:
 		var prepare message.Prepare
 		if err := dec.Decode(&prepare); err != nil {

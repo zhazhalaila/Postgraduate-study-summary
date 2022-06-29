@@ -86,6 +86,8 @@ L:
 }
 
 func (cm *ConsensusModule) handleMsg(req libnet.Request) {
+	cm.logger.Println(req)
+
 	// If epoch done, skip
 	if _, ok := cm.epochDone[req.Epoch]; ok {
 		return

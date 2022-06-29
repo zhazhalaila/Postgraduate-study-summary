@@ -1,11 +1,11 @@
 package message
 
 type PrePrepare struct {
-	Epoch               int
-	Round               int
-	Initiator           int
-	MerkleRoot          [32]byte
-	MerkleRootSignature []byte
+	Epoch            int
+	Round            int
+	Initiator        int
+	TxsHash          [32]byte
+	TxsHashSignature []byte
 	// Using pointer to avoid memory copy
 	Transactions *[][]byte
 }
@@ -14,7 +14,7 @@ type Prepare struct {
 	Epoch         int
 	Round         int
 	Initiator     int
-	MerkleRoot    [32]byte
+	TxsHash       [32]byte
 	VoteSignature []byte
 	Voter         int
 }

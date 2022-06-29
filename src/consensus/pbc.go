@@ -5,6 +5,7 @@ import (
 	"log"
 
 	"github.com/decred/dcrd/dcrec/secp256k1"
+	"github.com/zhazhalaila/PipelineBFT/src/genhash"
 	"github.com/zhazhalaila/PipelineBFT/src/libnet"
 	"github.com/zhazhalaila/PipelineBFT/src/message"
 )
@@ -103,11 +104,18 @@ func (pbc *PBC) run() {
 }
 
 func (pbc *PBC) handleCommand(msg interface{}) {
-	switch msg.(type) {
+	switch t := msg.(type) {
+	case message.NewTransaction:
+		pbc.handleNewTransaction(msg.(message.NewTransaction))
+
 	case message.PrePrepare:
 		pbc.handlePrePrepare(msg.(message.PrePrepare))
+
 	case message.Prepare:
 		pbc.handlePrepare(msg.(message.Prepare))
+
+	default:
+		pbc.logger.Println("Unkonwn Type: ", t)
 	}
 }
 
@@ -131,25 +139,64 @@ func (pbc *PBC) verifySignature(msgHash []byte, msgHashSignature []byte, sender 
 	return nil
 }
 
+func (pbc *PBC) handleNewTransaction(newTxs message.NewTransaction) {
+	pbc.logger.Printf("[Epoch%d] [Round:%d] [Proposer:%d] receive txs from client.\n",
+		newTxs.Epoch, newTxs.Round, pbc.id)
+	if newTxs.Initiator != pbc.id {
+		return
+	}
+
+	// Generate hash for transactions
+	txsHash, err := genhash.ConvertStructToHashBytes(newTxs.Transactions)
+	if err != nil {
+		pbc.logger.Printf("[Epoch:%d] [Round:%d] [Initiator:%d] generate hash for txs failed.\n",
+			newTxs.Epoch, newTxs.Round, newTxs.Initiator)
+		return
+	}
+
+	signature, err := pbc.priKey.Sign((*txsHash)[:])
+	if err != nil {
+		pbc.logger.Printf("[Epoch:%d] [Round:%d] [Initiator:%d] generate signature for txs failed.\n",
+			newTxs.Epoch, newTxs.Round, newTxs.Initiator)
+	}
+
+	preprepareMsg := message.PrePrepare{
+		Epoch:            newTxs.Epoch,
+		Round:            newTxs.Round,
+		Initiator:        newTxs.Initiator,
+		TxsHash:          *txsHash,
+		TxsHashSignature: signature.Serialize(),
+		Transactions:     newTxs.Transactions,
+	}
+
+	pbc.transport.Broadcast(message.PreprepareType, preprepareMsg)
+
+	pbc.logger.Printf("[Epoch:%d] [Round:%d] [Initiator:%d] broadcast new txs to all nodes.\n",
+		newTxs.Epoch, newTxs.Round, pbc.id)
+}
+
 func (pbc *PBC) handlePrePrepare(prePrepare message.PrePrepare) {
 	if prePrepare.Initiator != pbc.fromInitiator {
-		pbc.logger.Printf("[Instance:%d] Get proposer = %d, want = %d.\n", pbc.fromInitiator,
-			prePrepare.Initiator, pbc.fromInitiator)
+		pbc.logger.Printf("[Epoch:%d] [Round:%d] [Instance:%d] Get proposer = %d, want = %d.\n",
+			prePrepare.Epoch, prePrepare.Round,
+			pbc.fromInitiator, prePrepare.Initiator, pbc.fromInitiator)
 		return
 	}
 
-	if _, ok := pbc.txs[prePrepare.MerkleRoot]; ok {
-		pbc.logger.Printf("Receive redundant txs from [Initiator:%d].\n", prePrepare.Initiator)
+	if _, ok := pbc.txs[prePrepare.TxsHash]; ok {
+		pbc.logger.Printf("[Epoch:%d] [Round:%d] Receive redundant txs from [Initiator:%d].\n",
+			prePrepare.Epoch, prePrepare.Round, prePrepare.Initiator)
 		return
 	}
 
-	err := pbc.verifySignature(prePrepare.MerkleRoot[:], prePrepare.MerkleRootSignature, prePrepare.Initiator)
+	err := pbc.verifySignature(prePrepare.TxsHash[:], prePrepare.TxsHashSignature, prePrepare.Initiator)
 	if err != nil {
-		pbc.logger.Printf("Receive invalid preprepare msg from [Peer:%d].\n", prePrepare.Initiator)
+		pbc.logger.Printf("[Epoch:%d] [Round:%d] Receive invalid preprepare msg from [Peer:%d].\n",
+			prePrepare.Epoch, prePrepare.Round, prePrepare.Initiator)
 		return
 	}
 
-	signature, err := pbc.priKey.Sign(prePrepare.MerkleRoot[:])
+	signature, err := pbc.priKey.Sign(prePrepare.TxsHash[:])
 	if err != nil {
 		pbc.logger.Println(err)
 		return
@@ -158,34 +205,39 @@ func (pbc *PBC) handlePrePrepare(prePrepare message.PrePrepare) {
 	prepareMsg := message.Prepare{
 		Epoch:         prePrepare.Epoch,
 		Round:         prePrepare.Round,
-		MerkleRoot:    prePrepare.MerkleRoot,
+		Initiator:     prePrepare.Initiator,
+		TxsHash:       prePrepare.TxsHash,
 		Voter:         pbc.id,
 		VoteSignature: signature.Serialize(),
 	}
 
-	pbc.txs[prePrepare.MerkleRoot] = prePrepare.Transactions
-
+	pbc.txs[prePrepare.TxsHash] = prePrepare.Transactions
 	pbc.transport.Broadcast(message.PrepareType, prepareMsg)
+
+	pbc.logger.Printf("[Epoch:%d] [Round:%d] [Initiator:%d] [Peer:%d] broadcast vote to all nodes.\n",
+		prePrepare.Epoch, prePrepare.Round, prePrepare.Initiator, pbc.id)
 }
 
 func (pbc *PBC) handlePrepare(prepare message.Prepare) {
-	if _, ok := pbc.sigSets[prepare.MerkleRoot][prepare.Voter]; ok {
-		pbc.logger.Printf("Receive redundant prepare msg from [Peer:%d].\n", prepare.Voter)
+	if _, ok := pbc.sigSets[prepare.TxsHash][prepare.Voter]; ok {
+		pbc.logger.Printf("[Epoch:%d] [Round:%d] Receive redundant prepare msg from [Peer:%d].\n",
+			prepare.Epoch, prepare.Round, prepare.Voter)
 		return
 	}
 
-	err := pbc.verifySignature(prepare.MerkleRoot[:], prepare.VoteSignature, prepare.Voter)
+	err := pbc.verifySignature(prepare.TxsHash[:], prepare.VoteSignature, prepare.Voter)
 	if err != nil {
-		pbc.logger.Printf("Receive invalid prepare msg from [Peer:%d].\n", prepare.Voter)
+		pbc.logger.Printf("[Epoch:%d] [Round:%d] Receive invalid prepare msg from [Peer:%d].\n",
+			prepare.Epoch, prepare.Round, prepare.Voter)
 		return
 	}
 
-	if _, ok := pbc.sigSets[prepare.MerkleRoot]; !ok {
-		pbc.sigSets[prepare.MerkleRoot] = make(map[int][]byte)
+	if _, ok := pbc.sigSets[prepare.TxsHash]; !ok {
+		pbc.sigSets[prepare.TxsHash] = make(map[int][]byte)
 	}
-	pbc.sigSets[prepare.MerkleRoot][prepare.Voter] = prepare.VoteSignature
+	pbc.sigSets[prepare.TxsHash][prepare.Voter] = prepare.VoteSignature
 
-	for hash, collected := range pbc.sigSets {
+	for txsHash, collected := range pbc.sigSets {
 		if len(collected) == 2*pbc.f+1 {
 			proofs := make([][]byte, 2*pbc.f+1)
 			for _, sig := range collected {
@@ -198,21 +250,22 @@ func (pbc *PBC) handlePrepare(prepare message.Prepare) {
 			qc.Proposer = pbc.fromInitiator
 			qc.Epoch = pbc.epoch
 			qc.R = pbc.r
-			qc.Hash = hash[:]
+			qc.Hash = txsHash[:]
 
-			// send qc to epoch module
-			select {
-			case <-pbc.stop:
-				return
-			case pbc.epochEvent <- Event{
-				eventType:  PBCOUTPUT,
-				r:          pbc.r,
-				instanceId: pbc.fromInitiator,
-				qc:         qc,
-			}:
-			}
-		} else {
-			return
+			pbc.logger.Printf("[Epoch:%d] [Round:%d] generate QC for [Initiator:%d].\n",
+				prepare.Epoch, prepare.Round, prepare.Initiator)
+
+			// 		// send qc to epoch module
+			// 		select {
+			// 		case <-pbc.stop:
+			// 			return
+			// 		case pbc.epochEvent <- Event{
+			// 			eventType:  PBCOUTPUT,
+			// 			r:          pbc.r,
+			// 			instanceId: pbc.fromInitiator,
+			// 			qc:         qc,
+			// 		}:
+			// 		}
 		}
 	}
 }

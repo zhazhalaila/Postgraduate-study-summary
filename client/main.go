@@ -6,6 +6,7 @@ import (
 	"log"
 	"net"
 
+	"github.com/zhazhalaila/PipelineBFT/src/fake"
 	"github.com/zhazhalaila/PipelineBFT/src/message"
 )
 
@@ -37,13 +38,14 @@ func main() {
 	enc := json.NewEncoder(w)
 
 	// create new message
-	msg := message.PrePrepare{
-		Epoch:     0,
-		Round:     1,
-		Initiator: 2,
+	msg := message.NewTransaction{
+		Epoch:        0,
+		Round:        1,
+		Initiator:    0,
+		Transactions: fake.FakeBatchTx(2, 1, 1, 0),
 	}
 
-	writedata(w, enc, message.PreprepareType, msg)
+	writedata(w, enc, message.NewTransactionsType, msg)
 
 	// close connection
 	conn.Close()

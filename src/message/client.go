@@ -4,5 +4,6 @@ type NewTransaction struct {
 	ClientAddr   string
 	Epoch        int
 	Round        int
+	Initiator    int
 	Transactions *[][]byte
 }

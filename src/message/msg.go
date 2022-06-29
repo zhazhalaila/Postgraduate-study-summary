@@ -1,6 +1,7 @@
 package message
 
 const (
-	PreprepareType uint8 = iota
+	NewTransactionsType uint8 = iota
+	PreprepareType
 	PrepareType
 )
