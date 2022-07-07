@@ -1,5 +1,10 @@
 package message
 
+type PBCModule struct {
+	Round    int
+	Initator int
+}
+
 type PrePrepare struct {
 	Epoch            int
 	Round            int

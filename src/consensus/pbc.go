@@ -8,6 +8,7 @@ import (
 	"github.com/zhazhalaila/PipelineBFT/src/genhash"
 	"github.com/zhazhalaila/PipelineBFT/src/libnet"
 	"github.com/zhazhalaila/PipelineBFT/src/message"
+	"github.com/zhazhalaila/PipelineBFT/src/verify"
 )
 
 var (
@@ -119,26 +120,6 @@ func (pbc *PBC) handleCommand(msg interface{}) {
 	}
 }
 
-func (pbc *PBC) verifySignature(msgHash []byte, msgHashSignature []byte, sender int) error {
-	signature, err := secp256k1.ParseDERSignature(msgHashSignature)
-	if err != nil {
-		pbc.logger.Printf("Parse signature from [Peer:%d] error.\n", sender)
-		return err
-	}
-
-	initiatorPubKey, ok := pbc.pubKeys[sender]
-	if !ok {
-		pbc.logger.Printf("Not record [%d] pubkey.\n", sender)
-		return ErrPeerNotFound
-	}
-
-	if verified := signature.Verify(msgHash, initiatorPubKey); !verified {
-		pbc.logger.Printf("Receive invalid signature from [Peer:%d].\n", sender)
-		return ErrVerifyFail
-	}
-	return nil
-}
-
 func (pbc *PBC) handleNewTransaction(newTxs message.NewTransaction) {
 	pbc.logger.Printf("[Epoch%d] [Round:%d] [Proposer:%d] receive txs from client.\n",
 		newTxs.Epoch, newTxs.Round, pbc.id)
@@ -189,7 +170,7 @@ func (pbc *PBC) handlePrePrepare(prePrepare message.PrePrepare) {
 		return
 	}
 
-	err := pbc.verifySignature(prePrepare.TxsHash[:], prePrepare.TxsHashSignature, prePrepare.Initiator)
+	err := verify.VerifySignature(prePrepare.TxsHash[:], prePrepare.TxsHashSignature, pbc.pubKeys, prePrepare.Initiator)
 	if err != nil {
 		pbc.logger.Printf("[Epoch:%d] [Round:%d] Receive invalid preprepare msg from [Peer:%d].\n",
 			prePrepare.Epoch, prePrepare.Round, prePrepare.Initiator)
@@ -225,7 +206,7 @@ func (pbc *PBC) handlePrepare(prepare message.Prepare) {
 		return
 	}
 
-	err := pbc.verifySignature(prepare.TxsHash[:], prepare.VoteSignature, prepare.Voter)
+	err := verify.VerifySignature(prepare.TxsHash[:], prepare.VoteSignature, pbc.pubKeys, prepare.Voter)
 	if err != nil {
 		pbc.logger.Printf("[Epoch:%d] [Round:%d] Receive invalid prepare msg from [Peer:%d].\n",
 			prepare.Epoch, prepare.Round, prepare.Voter)

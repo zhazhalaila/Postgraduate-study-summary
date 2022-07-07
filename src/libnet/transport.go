@@ -205,7 +205,7 @@ func (nt *NetworkTransport) peerManger() {
 
 		case broadcastMsg := <-nt.outBroadcastCh:
 			for id, peer := range peers {
-				if err := nt.writeDataToPeer(peer.w, peer.enc, broadcastMsg.msgType, broadcastMsg.msg); err != nil {
+				if err := nt.writeDataToPeer(peer.w, peer.enc, broadcastMsg.msg); err != nil {
 					nt.logger.Printf("Send data to [Peer:%d] error : %s.\n", id, err.Error())
 					peer.conn.Close()
 					delete(peers, id)
@@ -214,7 +214,7 @@ func (nt *NetworkTransport) peerManger() {
 
 		case peerMsg := <-nt.outSingleCh:
 			if peer, ok := peers[peerMsg.peerId]; ok {
-				if err := nt.writeDataToPeer(peer.w, peer.enc, peerMsg.msgType, peerMsg.msg); err != nil {
+				if err := nt.writeDataToPeer(peer.w, peer.enc, peerMsg.msg); err != nil {
 					nt.logger.Printf("Send data to [Peer:%d] error : %s.\n", peerMsg.peerId, err.Error())
 					peer.conn.Close()
 					delete(peers, peerMsg.peerId)
@@ -227,12 +227,7 @@ func (nt *NetworkTransport) peerManger() {
 // using Flush() func write data immediately
 func (nt *NetworkTransport) writeDataToPeer(w *bufio.Writer,
 	enc *json.Encoder,
-	msgType uint8,
 	msg interface{}) error {
-	// Write msg type
-	if err := w.WriteByte(msgType); err != nil {
-		return err
-	}
 
 	// Send the msg
 	if err := enc.Encode(msg); err != nil {
