@@ -5,5 +5,5 @@ type QuorumCert struct {
 	Epoch      int
 	R          int
 	Proposer   int
-	Hash       []byte
+	RootHash   [32]byte
 }

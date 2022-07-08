@@ -39,9 +39,6 @@ func main() {
 
 	// create new message
 	msg := message.NewTransaction{
-		Epoch:        0,
-		Round:        1,
-		Initiator:    0,
 		Transactions: fake.FakeBatchTx(2, 1, 1, 0),
 	}
 

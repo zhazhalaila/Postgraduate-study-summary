@@ -1,7 +1,12 @@
 package message
 
 const (
-	NewTransactionsType uint8 = iota
+	PBType uint8 = iota
+	ABAType
+	NewTransactionsType
+	SendType
+	AckType
+	DoneType
 	PreprepareType
 	PrepareType
 )

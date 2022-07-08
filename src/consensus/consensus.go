@@ -6,6 +6,7 @@ import (
 	"github.com/decred/dcrd/dcrec/secp256k1"
 	"github.com/zhazhalaila/PipelineBFT/src/keys"
 	"github.com/zhazhalaila/PipelineBFT/src/libnet"
+	"github.com/zhazhalaila/PipelineBFT/src/message"
 )
 
 type ConsensusModule struct {
@@ -85,7 +86,7 @@ L:
 	cm.logger.Println("Consensus module break")
 }
 
-func (cm *ConsensusModule) handleMsg(req libnet.Request) {
+func (cm *ConsensusModule) handleMsg(req message.Entrance) {
 	cm.logger.Println(req)
 
 	// If epoch done, skip
@@ -93,14 +94,8 @@ func (cm *ConsensusModule) handleMsg(req libnet.Request) {
 		return
 	}
 
-	epochReq := EpochReq{
-		round:     req.Round,
-		initiator: req.Initiator,
-		msg:       req.Msg,
-	}
-
 	if epoch, ok := cm.epochs[req.Epoch]; ok {
-		epoch.Input(epochReq)
+		epoch.Input(req)
 	} else {
 		cm.epochs[req.Epoch] = MakeEpoch(
 			cm.logger, cm.transport,

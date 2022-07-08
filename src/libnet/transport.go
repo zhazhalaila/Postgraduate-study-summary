@@ -32,22 +32,15 @@ type NetworkTransport struct {
 	peerRegisterCh chan peer
 
 	// Send data to consensus module
-	consumeCh chan Request
+	consumeCh chan message.Entrance
 	// Read data from consensus module and broadcast data to all peers
-	outBroadcastCh chan broadcastData
+	outBroadcastCh chan interface{}
 	// Read data from consensus module and send data to specific peer
 	outSingleCh chan peerData
 	// Read consens result from consensus module and write result to client
 	resultCh chan interface{}
 
 	stopCh chan struct{}
-}
-
-type Request struct {
-	Epoch     int
-	Round     int
-	Initiator int
-	Msg       interface{}
 }
 
 type remoteConn struct {
@@ -60,11 +53,6 @@ type peer struct {
 	conn net.Conn
 	w    *bufio.Writer
 	enc  *json.Encoder
-}
-
-type broadcastData struct {
-	msgType uint8
-	msg     interface{}
 }
 
 type peerData struct {
@@ -80,8 +68,8 @@ func NewNetworkTransport(logger *log.Logger, port string) *NetworkTransport {
 	nt.logInCh = make(chan remoteConn, 100)
 	nt.logOutCh = make(chan string, 100)
 	nt.peerRegisterCh = make(chan peer, 100)
-	nt.consumeCh = make(chan Request, 10000)
-	nt.outBroadcastCh = make(chan broadcastData, 10000)
+	nt.consumeCh = make(chan message.Entrance, 10000)
+	nt.outBroadcastCh = make(chan interface{}, 10000)
 	nt.outSingleCh = make(chan peerData, 10000)
 	nt.resultCh = make(chan interface{}, 100)
 	nt.stopCh = make(chan struct{})
@@ -124,7 +112,7 @@ func (nt *NetworkTransport) Exit() {
 }
 
 // Read data from remote connection
-func (nt *NetworkTransport) Consume() <-chan Request {
+func (nt *NetworkTransport) Consume() <-chan message.Entrance {
 	return nt.consumeCh
 }
 
@@ -134,11 +122,11 @@ func (nt *NetworkTransport) Stopped() <-chan struct{} {
 }
 
 // Broadcast data to all peers
-func (nt *NetworkTransport) Broadcast(msgType uint8, msg interface{}) {
+func (nt *NetworkTransport) Broadcast(msg interface{}) {
 	select {
 	case <-nt.stopCh:
 		return
-	case nt.outBroadcastCh <- broadcastData{msgType: msgType, msg: msg}:
+	case nt.outBroadcastCh <- msg:
 	}
 }
 
@@ -203,9 +191,9 @@ func (nt *NetworkTransport) peerManger() {
 				peers[peer.id] = peer
 			}
 
-		case broadcastMsg := <-nt.outBroadcastCh:
+		case msg := <-nt.outBroadcastCh:
 			for id, peer := range peers {
-				if err := nt.writeDataToPeer(peer.w, peer.enc, broadcastMsg.msg); err != nil {
+				if err := nt.writeDataToPeer(peer.w, peer.enc, msg); err != nil {
 					nt.logger.Printf("Send data to [Peer:%d] error : %s.\n", id, err.Error())
 					peer.conn.Close()
 					delete(peers, id)
@@ -261,7 +249,7 @@ func (nt *NetworkTransport) handleConn(conn net.Conn) {
 	}
 
 	for {
-		if err := nt.handleCommand(r, dec); err != nil {
+		if err := nt.handleCommand(dec); err != nil {
 			log.Println(err)
 			return
 		}
@@ -269,48 +257,19 @@ func (nt *NetworkTransport) handleConn(conn net.Conn) {
 }
 
 // handle command
-func (nt *NetworkTransport) handleCommand(r *bufio.Reader, dec *json.Decoder) error {
-	// Get the msg type
-	msgType, err := r.ReadByte()
-	if err != nil {
+func (nt *NetworkTransport) handleCommand(dec *json.Decoder) error {
+	var entrance message.Entrance
+
+	if err := dec.Decode(&entrance); err != nil {
 		return err
 	}
 
-	log.Println("Transport read type: ", msgType)
-
-	var req Request
-
-	switch msgType {
-	// case message.NewTransactionsType:
-	// 	var newTxs message.NewTransaction
-
-	case message.PreprepareType:
-		var preprepare message.PrePrepare
-		if err := dec.Decode(&preprepare); err != nil {
-			return err
-		}
-		req.Epoch = preprepare.Epoch
-		req.Round = preprepare.Round
-		req.Initiator = preprepare.Initiator
-		req.Msg = preprepare
-
-	case message.PrepareType:
-		var prepare message.Prepare
-		if err := dec.Decode(&prepare); err != nil {
-			return err
-		}
-		req.Epoch = prepare.Epoch
-		req.Round = prepare.Round
-		req.Initiator = prepare.Initiator
-		req.Msg = prepare
-	}
-
-	log.Println("Tansaport: ", req)
+	nt.logger.Println("Transport receive: ", entrance)
 
 	select {
 	case <-nt.stopCh:
 		return ErrTransportStop
-	case nt.consumeCh <- req:
+	case nt.consumeCh <- entrance:
 	}
 
 	return nil

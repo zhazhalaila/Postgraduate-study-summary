@@ -13,12 +13,6 @@ const (
 	PRODUCER  = iota
 )
 
-type EpochReq struct {
-	round     int
-	initiator int
-	msg       interface{}
-}
-
 type Event struct {
 	eventType  int
 	r          int
@@ -48,11 +42,11 @@ type Epoch struct {
 	pubKeys map[int]*secp256k1.PublicKey
 
 	path *Path
-	pbcs map[int]map[int]*PBC
+	pbcs map[int]map[int]*PB
 
 	event  chan Event
 	stopCh chan bool
-	inCh   chan EpochReq
+	inCh   chan message.Entrance
 }
 
 func MakeEpoch(
@@ -75,26 +69,26 @@ func MakeEpoch(
 	e.priKey = priKey
 	e.pubKeys = pubKeys
 	e.path = NewPath(e.n, e.f, e.maxRound)
-	e.pbcs = make(map[int]map[int]*PBC, e.n)
+	e.pbcs = make(map[int]map[int]*PB, e.n)
 	e.event = make(chan Event, e.n*e.maxRound)
-	e.inCh = make(chan EpochReq, e.n*e.n*e.maxRound)
+	e.inCh = make(chan message.Entrance, e.n*e.n*e.maxRound)
 
 	// Initiate pbc instances
-	for i := 0; i < maxRound; i++ {
-		e.pbcs[i] = make(map[int]*PBC, e.n)
-		for j := 0; j < n; j++ {
-			e.pbcs[i][j] = MakePBC(
-				e.logger, e.transport,
-				e.n, e.f, e.id, e.epoch, j, j,
-				e.pubKey, e.priKey, e.pubKeys, e.event)
-		}
-	}
+	// for i := 0; i < maxRound; i++ {
+	// 	e.pbcs[i] = make(map[int]*PBC, e.n)
+	// 	for j := 0; j < n; j++ {
+	// 		e.pbcs[i][j] = MakePBC(
+	// 			e.logger, e.transport,
+	// 			e.n, e.f, e.id, e.epoch, j, j,
+	// 			e.pubKey, e.priKey, e.pubKeys, e.event)
+	// 	}
+	// }
 
 	go e.run()
 	return e
 }
 
-func (e *Epoch) Input(msg EpochReq) {
+func (e *Epoch) Input(msg message.Entrance) {
 	e.inCh <- msg
 }
 
@@ -116,11 +110,15 @@ L:
 	}
 }
 
-func (e *Epoch) handleMsg(epochReq EpochReq) {
-	switch epochReq.msg.(type) {
-	case message.PrePrepare, message.Prepare, message.NewTransaction:
-		e.pbcs[epochReq.round][epochReq.initiator].Input(epochReq.msg)
+func (e *Epoch) handleMsg(req message.Entrance) {
+	switch req.ModuleType {
+	case message.PBType:
+
 	}
+	// switch epochReq.msg.(type) {
+	// case message.PrePrepare, message.Prepare, message.NewTransaction:
+	// 	e.pbcs[epochReq.round][epochReq.initiator].Input(epochReq.msg)
+	// }
 }
 
 func (e *Epoch) handleEvent(event Event) {
