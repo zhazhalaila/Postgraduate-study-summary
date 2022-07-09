@@ -9,6 +9,11 @@ type PBEntrance struct {
 	Payload      json.RawMessage
 }
 
+type NewTransaction struct {
+	ClientAddr   string
+	Transactions *[][]byte
+}
+
 type SEND struct {
 	Initiator         int
 	RootHash          [32]byte

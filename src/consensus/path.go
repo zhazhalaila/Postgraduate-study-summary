@@ -1,13 +1,14 @@
 package consensus
 
 import (
-	"encoding/json"
 	"reflect"
+	"sync"
 
 	"github.com/zhazhalaila/PipelineBFT/src/message"
 )
 
 type Path struct {
+	mu  sync.Mutex
 	n   int
 	f   int
 	k   int
@@ -27,31 +28,12 @@ func NewPath(n, f, k int) *Path {
 	return p
 }
 
-// Serialize path
-func SerializePath(p *Path) ([]byte, error) {
-	qcs := p.qcs
-	qcsBytes, err := json.Marshal(qcs)
-	if err != nil {
-		return nil, err
-	}
-	return qcsBytes, nil
-}
-
-// Deserialize path
-func DeserializePath(qcsByte []byte) (*Path, error) {
-	var qcs [][]message.QuorumCert
-	err := json.Unmarshal(qcsByte, &qcs)
-	if err != nil {
-		return nil, err
-	}
-	p := &Path{}
-	p.qcs = qcs
-	return p, nil
-}
-
 // Check qc has been cache
-func (p *Path) Exist(r int, qc message.QuorumCert) bool {
-	for _, b := range p.qcs[r] {
+func (p *Path) Exist(qc message.QuorumCert) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	for _, b := range p.qcs[qc.Round] {
 		if reflect.DeepEqual(qc, b) {
 			return true
 		}
@@ -60,12 +42,18 @@ func (p *Path) Exist(r int, qc message.QuorumCert) bool {
 }
 
 // Add path
-func (p *Path) Add(r int, qc message.QuorumCert) {
-	p.qcs[r] = append(p.qcs[r], qc)
+func (p *Path) Add(qc message.QuorumCert) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	p.qcs[qc.Round] = append(p.qcs[qc.Round], qc)
 }
 
 // Check there are at least n-f qc for each r
 func (p *Path) RecvThreshold() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
 	result := true
 	for i := 0; i < p.k; i++ {
 		if len(p.qcs[i]) < p.n-p.f {

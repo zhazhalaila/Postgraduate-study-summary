@@ -10,12 +10,7 @@ import (
 	"github.com/zhazhalaila/PipelineBFT/src/message"
 )
 
-func writedata(w *bufio.Writer, enc *json.Encoder, msgType uint8, msg interface{}) {
-	// Write request type
-	if err := w.WriteByte(message.PreprepareType); err != nil {
-		log.Fatal(err)
-	}
-
+func writedata(w *bufio.Writer, enc *json.Encoder, msg interface{}) {
 	// Send the request
 	if err := enc.Encode(msg); err != nil {
 		log.Fatal(err)
@@ -28,7 +23,7 @@ func writedata(w *bufio.Writer, enc *json.Encoder, msgType uint8, msg interface{
 }
 
 func main() {
-	// create new connection
+	// Create new connection
 	conn, err := net.Dial("tcp", "127.0.0.1:8000")
 	if err != nil {
 		log.Fatal(err)
@@ -37,12 +32,18 @@ func main() {
 	w := bufio.NewWriterSize(conn, 4096)
 	enc := json.NewEncoder(w)
 
-	// create new message
-	msg := message.NewTransaction{
+	// Create new transaction request
+	req := message.NewTransaction{
+		ClientAddr:   conn.LocalAddr().String(),
 		Transactions: fake.FakeBatchTx(2, 1, 1, 0),
 	}
+	reqJson, _ := json.Marshal(req)
 
-	writedata(w, enc, message.NewTransactionsType, msg)
+	pbEntrance := message.GenPBEntrance(message.NewTransactionsType, -1, -1, reqJson)
+	pbEntranceJson, _ := json.Marshal(pbEntrance)
+
+	entrance := message.GenEntrance(message.PBType, -1, pbEntranceJson)
+	writedata(w, enc, entrance)
 
 	// close connection
 	conn.Close()

@@ -264,7 +264,7 @@ func (nt *NetworkTransport) handleCommand(dec *json.Decoder) error {
 		return err
 	}
 
-	nt.logger.Println("Transport receive: ", entrance)
+	// nt.logger.Println("Transport receive: , ", entrance, string(entrance.Payload))
 
 	select {
 	case <-nt.stopCh:

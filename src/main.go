@@ -41,7 +41,7 @@ func main() {
 	n := flag.Int("n", 4, "total node number")
 	f := flag.Int("f", 1, "byzantine node number")
 	id := flag.Int("id", 0, "assign a unique number to different server")
-	maxRound := flag.Int("mr", 1, "max round for each epoch")
+	maxRound := flag.Int("mr", 4, "max round for each epoch")
 	flag.Parse()
 
 	prefixLogPath := "../" + *logPath

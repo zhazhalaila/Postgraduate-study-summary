@@ -1,6 +1,7 @@
 package consensus
 
 import (
+	"encoding/json"
 	"log"
 
 	"github.com/decred/dcrd/dcrec/secp256k1"
@@ -15,6 +16,7 @@ type ConsensusModule struct {
 	n         int
 	f         int
 	id        int
+	epoch     int
 	maxRound  int
 	// public key
 	pubKey *secp256k1.PublicKey
@@ -37,6 +39,7 @@ func MakeConsensusModule(logger *log.Logger,
 	cm.n = n
 	cm.f = f
 	cm.id = id
+	cm.epoch = 0
 	cm.maxRound = maxRound
 
 	// Read key pair for current peer
@@ -87,7 +90,28 @@ L:
 }
 
 func (cm *ConsensusModule) handleMsg(req message.Entrance) {
-	cm.logger.Println(req)
+	// cm.logger.Println("Consensus: ", req)
+
+	// If epoch not create, create it.
+	if req.ModuleType == message.PBType {
+		var pbEntrance message.PBEntrance
+		err := json.Unmarshal(req.Payload, &pbEntrance)
+		if err != nil {
+			return
+		}
+
+		if pbEntrance.SpecificType == message.NewTransactionsType {
+			if epoch, ok := cm.epochs[cm.epoch]; ok && !epoch.Full() {
+				epoch.Input(req)
+			} else if !ok {
+				cm.inputEpoch(cm.epoch, req)
+			} else if epoch.Full() {
+				cm.epoch++
+				cm.inputEpoch(cm.epoch, req)
+			}
+			return
+		}
+	}
 
 	// If epoch done, skip
 	if _, ok := cm.epochDone[req.Epoch]; ok {
@@ -97,9 +121,19 @@ func (cm *ConsensusModule) handleMsg(req message.Entrance) {
 	if epoch, ok := cm.epochs[req.Epoch]; ok {
 		epoch.Input(req)
 	} else {
-		cm.epochs[req.Epoch] = MakeEpoch(
-			cm.logger, cm.transport,
-			cm.n, cm.f, cm.id, req.Epoch, cm.maxRound,
-			cm.pubKey, cm.priKey, cm.pubKeys)
+		cm.inputEpoch(req.Epoch, req)
 	}
+}
+
+func (cm *ConsensusModule) makeNewEpoch(epoch int) *Epoch {
+	e := MakeEpoch(
+		cm.logger, cm.transport,
+		cm.n, cm.f, cm.id, epoch, cm.maxRound,
+		cm.pubKey, cm.priKey, cm.pubKeys)
+	return e
+}
+
+func (cm *ConsensusModule) inputEpoch(epoch int, req message.Entrance) {
+	cm.epochs[epoch] = cm.makeNewEpoch(epoch)
+	cm.epochs[epoch].Input(req)
 }

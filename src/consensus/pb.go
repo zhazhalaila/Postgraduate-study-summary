@@ -32,7 +32,7 @@ type PB struct {
 	preparedThreshold int
 
 	partialShard *[]byte
-	rootHash     *[32]byte
+	rootHash     [32]byte
 	branch       *[][32]byte
 	// collect all voters' signatures, only initiator do this
 	sigSets map[int][]byte
@@ -107,6 +107,7 @@ func (pb *PB) run() {
 }
 
 func (pb *PB) handleCommand(entrance message.PBEntrance) {
+	// pb.logger.Println("PB: ", string(entrance.Payload))
 	switch entrance.SpecificType {
 	case message.NewTransactionsType:
 		var newTxs message.NewTransaction
@@ -169,7 +170,7 @@ func (pb *PB) handleNewTransaction(newTxs message.NewTransaction) {
 
 	// Get merkletree root
 	rootHash := mt[1]
-	pb.rootHash = &rootHash
+	pb.rootHash = rootHash
 
 	// Sign merkletree root
 	signature, err := pb.priKey.Sign(rootHash[:])
@@ -235,8 +236,11 @@ func (pb *PB) handleSend(send message.SEND) {
 		return
 	}
 
+	pb.logger.Printf("[Epoch:%d] [Round:%d] [Peer:%d] Receive valid SEND msg from [Initiator:%d].\n",
+		pb.epoch, pb.r, pb.id, send.Initiator)
+
 	pb.partialShard = send.Share
-	pb.rootHash = &send.RootHash
+	pb.rootHash = send.RootHash
 	pb.branch = send.Branch
 
 	ack := message.ACK{
@@ -281,13 +285,16 @@ func (pb *PB) handleAck(ack message.ACK) {
 		return
 	}
 
+	pb.logger.Printf("[Epoch:%d] [Round:%d] [Peer:%d] Receive valid ACK msg from [Initiator:%d].\n",
+		pb.epoch, pb.r, pb.id, ack.Voter)
+
 	pb.sigSets[ack.Voter] = ack.VoteSignature
 
 	// If acquire 2f+1 ACK, broadcast DONE
 	if len(pb.sigSets) == 2*pb.f+1 {
 		done := message.DONE{
 			Initiator:  pb.id,
-			RootHash:   *pb.rootHash,
+			RootHash:   pb.rootHash,
 			Signatures: pb.sigSets,
 		}
 		doneJson, _ := json.Marshal(done)
@@ -303,6 +310,9 @@ func (pb *PB) handleAck(ack message.ACK) {
 		default:
 			pb.transport.Broadcast(entrance)
 		}
+
+		pb.logger.Printf("[Epoch:%d] [Round:%d] [Initiator:%d] Broadcast QC.\n",
+			pb.epoch, pb.r, pb.id)
 	}
 }
 
@@ -320,5 +330,19 @@ func (pb *PB) handleDone(done message.DONE) {
 		}
 	}
 
-	pb.logger.Printf("[Epoch:%d] [Round:%d] decide output for [Initiator:%d].\n", pb.epoch, pb.r, pb.fromInitiator)
+	pb.logger.Printf("[Epoch:%d] [Round:%d] deliver PB instance [Initiator:%d].\n", pb.epoch, pb.r, pb.fromInitiator)
+
+	select {
+	case <-pb.stop:
+		return
+	case pb.epochEvent <- Event{
+		eventType: DeliverPB,
+		qc: message.QuorumCert{
+			Initiator:  pb.fromInitiator,
+			Round:      pb.r,
+			RootHash:   pb.rootHash,
+			Signatures: done.Signatures,
+		},
+	}:
+	}
 }

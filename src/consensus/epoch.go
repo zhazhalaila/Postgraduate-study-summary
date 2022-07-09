@@ -1,6 +1,7 @@
 package consensus
 
 import (
+	"encoding/json"
 	"log"
 
 	"github.com/decred/dcrd/dcrec/secp256k1"
@@ -9,12 +10,12 @@ import (
 )
 
 const (
-	PBCOUTPUT = iota
-	PRODUCER  = iota
+	DeliverPB uint8 = iota
+	PRODUCER
 )
 
 type Event struct {
-	eventType  int
+	eventType  uint8
 	r          int
 	instanceId int
 	qc         message.QuorumCert
@@ -31,8 +32,9 @@ type Epoch struct {
 	f     int
 	id    int
 	epoch int
-	// k reference how many rounds concurrently process in each epoch
+	// maxRound reference how many rounds concurrently process in each epoch
 	maxRound int
+	k        int
 
 	// public key
 	pubKey *secp256k1.PublicKey
@@ -42,7 +44,7 @@ type Epoch struct {
 	pubKeys map[int]*secp256k1.PublicKey
 
 	path *Path
-	pbcs map[int]map[int]*PB
+	pbs  map[int]map[int]*PB
 
 	event  chan Event
 	stopCh chan bool
@@ -65,27 +67,32 @@ func MakeEpoch(
 	e.id = id
 	e.epoch = epoch
 	e.maxRound = maxRound
+	e.k = 0
 	e.pubKey = pubKey
 	e.priKey = priKey
 	e.pubKeys = pubKeys
 	e.path = NewPath(e.n, e.f, e.maxRound)
-	e.pbcs = make(map[int]map[int]*PB, e.n)
+	e.pbs = make(map[int]map[int]*PB, e.maxRound)
 	e.event = make(chan Event, e.n*e.maxRound)
 	e.inCh = make(chan message.Entrance, e.n*e.n*e.maxRound)
 
-	// Initiate pbc instances
-	// for i := 0; i < maxRound; i++ {
-	// 	e.pbcs[i] = make(map[int]*PBC, e.n)
-	// 	for j := 0; j < n; j++ {
-	// 		e.pbcs[i][j] = MakePBC(
-	// 			e.logger, e.transport,
-	// 			e.n, e.f, e.id, e.epoch, j, j,
-	// 			e.pubKey, e.priKey, e.pubKeys, e.event)
-	// 	}
-	// }
+	// Initiate pb instances
+	for i := 0; i < maxRound; i++ {
+		e.pbs[i] = make(map[int]*PB, e.n)
+		for j := 0; j < n; j++ {
+			e.pbs[i][j] = MakePB(
+				e.logger, e.transport,
+				e.n, e.f, e.id, e.epoch, i, j,
+				e.pubKey, e.priKey, e.pubKeys, e.event)
+		}
+	}
 
 	go e.run()
 	return e
+}
+
+func (e *Epoch) Full() bool {
+	return e.k == e.maxRound
 }
 
 func (e *Epoch) Input(msg message.Entrance) {
@@ -113,27 +120,41 @@ L:
 func (e *Epoch) handleMsg(req message.Entrance) {
 	switch req.ModuleType {
 	case message.PBType:
-
+		e.handlePBEntrance(req)
 	}
-	// switch epochReq.msg.(type) {
-	// case message.PrePrepare, message.Prepare, message.NewTransaction:
-	// 	e.pbcs[epochReq.round][epochReq.initiator].Input(epochReq.msg)
-	// }
+}
+
+func (e *Epoch) handlePBEntrance(req message.Entrance) {
+	// e.logger.Println("Epoch: ", string(req.Payload))
+
+	var pbEntrance message.PBEntrance
+	err := json.Unmarshal(req.Payload, &pbEntrance)
+	if err != nil {
+		return
+	}
+
+	if pbEntrance.SpecificType == message.NewTransactionsType {
+		e.pbs[e.k][e.id].Input(pbEntrance)
+		e.k++
+		e.logger.Printf("K=%d \n", e.k)
+	} else {
+		e.pbs[pbEntrance.Round][pbEntrance.Initiator].Input(pbEntrance)
+	}
 }
 
 func (e *Epoch) handleEvent(event Event) {
 	switch event.eventType {
-	case PBCOUTPUT:
-		e.handlePBCOut(event.r, event.qc)
+	case DeliverPB:
+		e.handlePBCOut(event.qc)
 	}
 }
 
-func (e *Epoch) handlePBCOut(r int, qc message.QuorumCert) {
-	if e.path.Exist(r, qc) {
+func (e *Epoch) handlePBCOut(qc message.QuorumCert) {
+	if e.path.Exist(qc) {
 		return
 	}
 
-	e.path.Add(r, qc)
+	e.path.Add(qc)
 	if e.path.RecvThreshold() {
 		// broadcast to all
 	}
