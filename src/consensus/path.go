@@ -62,3 +62,13 @@ func (p *Path) RecvThreshold() bool {
 	}
 	return result
 }
+
+// Get qcs
+func (p *Path) GetQC() [][]message.QuorumCert {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	var qcCopy [][]message.QuorumCert
+	qcCopy = p.qcs
+	return qcCopy
+}

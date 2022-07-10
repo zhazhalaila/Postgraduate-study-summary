@@ -2,6 +2,7 @@ package message
 
 const (
 	PBType uint8 = iota
+	CBCType
 	ABAType
 
 	// PB
@@ -9,6 +10,11 @@ const (
 	SendType
 	AckType
 	DoneType
+
+	// CBC
+	CBCSendType
+	CBCAckType
+	CBCDoneType
 
 	// ABA
 )

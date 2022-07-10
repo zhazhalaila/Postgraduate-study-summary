@@ -73,7 +73,6 @@ L:
 	for {
 		select {
 		case req := <-cm.transport.Consume():
-			log.Println("Consensus: ", req)
 			cm.handleMsg(req)
 
 		case epoch := <-cm.epochCh:

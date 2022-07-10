@@ -156,6 +156,6 @@ func (e *Epoch) handlePBCOut(qc message.QuorumCert) {
 
 	e.path.Add(qc)
 	if e.path.RecvThreshold() {
-		// broadcast to all
+		e.logger.Println("Deliver enough PB instance")
 	}
 }

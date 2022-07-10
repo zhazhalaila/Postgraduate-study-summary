@@ -56,9 +56,8 @@ type peer struct {
 }
 
 type peerData struct {
-	peerId  int
-	msgType uint8
-	msg     interface{}
+	peerId int
+	msg    interface{}
 }
 
 func NewNetworkTransport(logger *log.Logger, port string) *NetworkTransport {
@@ -250,7 +249,7 @@ func (nt *NetworkTransport) handleConn(conn net.Conn) {
 
 	for {
 		if err := nt.handleCommand(dec); err != nil {
-			log.Println(err)
+			nt.logger.Println("Decode msg err: ", err)
 			return
 		}
 	}

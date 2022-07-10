@@ -162,6 +162,8 @@ func (pb *PB) handleNewTransaction(newTxs message.NewTransaction) {
 		return
 	}
 
+	pb.logger.Println(shards)
+
 	// Generate merkletree for shards
 	mt, err := merkletree.MakeMerkleTree(shards)
 	if err != nil {
@@ -182,10 +184,6 @@ func (pb *PB) handleNewTransaction(newTxs message.NewTransaction) {
 	// Broadcast shards to all nodes
 	for i := 0; i < pb.n; i++ {
 		branch := merkletree.GetMerkleBranch(i, mt)
-
-		if i == pb.id {
-			pb.branch = &branch
-		}
 
 		send := message.SEND{
 			Initiator:         pb.id,
@@ -211,6 +209,8 @@ func (pb *PB) handleNewTransaction(newTxs message.NewTransaction) {
 }
 
 func (pb *PB) handleSend(send message.SEND) {
+	pb.logger.Println(send.Share)
+
 	// If initiator is not excecept initiator, return
 	if send.Initiator != pb.fromInitiator {
 		pb.logger.Printf("[Epoch:%d] [Round:%d] [Instance:%d] Get proposer = %d, want = %d.\n",
@@ -273,19 +273,19 @@ func (pb *PB) handleAck(ack message.ACK) {
 
 	// If receive redundant ACK, return
 	if _, ok := pb.sigSets[ack.Voter]; ok {
-		pb.logger.Printf("[Epoch:%d] [Round:%d] Receive redundant ACK msg from [Initiator:%d].\n",
-			pb.epoch, pb.r, pb.fromInitiator)
+		pb.logger.Printf("[Epoch:%d] [Round:%d] Receive redundant ACK msg from [Voter:%d].\n",
+			pb.epoch, pb.r, ack.Voter)
 		return
 	}
 
 	err := verify.VerifySignature(ack.RootHash[:], ack.VoteSignature, pb.pubKeys, ack.Voter)
 	if err != nil {
-		pb.logger.Printf("[Epoch:%d] [Round:%d] Receive invalid ACK msg from [Initiator:%d].\n",
-			pb.epoch, pb.r, pb.fromInitiator)
+		pb.logger.Printf("[Epoch:%d] [Round:%d] Receive invalid ACK msg from [Voter:%d].\n",
+			pb.epoch, pb.r, ack.Voter)
 		return
 	}
 
-	pb.logger.Printf("[Epoch:%d] [Round:%d] [Peer:%d] Receive valid ACK msg from [Initiator:%d].\n",
+	pb.logger.Printf("[Epoch:%d] [Round:%d] [Peer:%d] Receive valid ACK msg from [Voter:%d].\n",
 		pb.epoch, pb.r, pb.id, ack.Voter)
 
 	pb.sigSets[ack.Voter] = ack.VoteSignature
