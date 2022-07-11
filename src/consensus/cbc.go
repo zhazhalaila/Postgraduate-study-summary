@@ -20,10 +20,10 @@ type CBC struct {
 	f             int
 	id            int
 	epoch         int
-	r             int
 	fromCandidate int
 
-	qcsHash []byte
+	qcsHash [32]byte
+	qcs     [][]message.QuorumCert
 	// collect all voters' signatures, only candidate do this
 	sigSets map[int][]byte
 
@@ -50,21 +50,19 @@ type CBC struct {
 func MakeCBC(
 	logger *log.Logger,
 	transport *libnet.NetworkTransport,
-	n, f, id, epoch, r, fromCandidate int,
+	n, f, id, epoch, fromCandidate int,
 	pubKey *secp256k1.PublicKey,
 	priKey *secp256k1.PrivateKey,
 	pubKeys map[int]*secp256k1.PublicKey,
 	selfPath *Path,
 	epochEvent chan Event) *CBC {
 	cbc := &CBC{}
-
 	cbc.logger = logger
 	cbc.transport = transport
 	cbc.n = n
 	cbc.f = f
 	cbc.id = id
 	cbc.epoch = epoch
-	cbc.r = r
 	cbc.fromCandidate = fromCandidate
 	cbc.sigSets = make(map[int][]byte)
 	cbc.pubKey = pubKey
@@ -85,6 +83,11 @@ func (cbc *CBC) Input(msg message.CBCEntrance) {
 
 func (cbc *CBC) Stop() {
 	close(cbc.stop)
+}
+
+func (cbc *CBC) AssignQcsHash(qcsHash [32]byte, qcs [][]message.QuorumCert) {
+	cbc.qcsHash = qcsHash
+	cbc.qcs = qcs
 }
 
 func (cbc *CBC) run() {
@@ -136,45 +139,50 @@ func (cbc *CBC) handleMsg(entrance message.CBCEntrance) {
 func (cbc *CBC) handleCBCSend(send message.CBCSEND) {
 	// If Candidate is not excecept Candidate, return
 	if send.Candidate != cbc.fromCandidate {
-		cbc.logger.Printf("[Epoch:%d] [Round:%d] [Instance:%d] Get candidate = %d, want = %d.\n",
-			cbc.epoch, cbc.r, cbc.fromCandidate, send.Candidate, cbc.fromCandidate)
+		cbc.logger.Printf("[Epoch:%d] [Peer:%d] [Instance:%d] Get candidate = %d, want = %d.\n",
+			cbc.epoch, cbc.id, cbc.fromCandidate, send.Candidate, cbc.fromCandidate)
 		return
 	}
 
-	err := verify.VerifySignature(send.QcsHash, send.QcsHashSignature, cbc.pubKeys, send.Candidate)
+	err := verify.VerifySignature(send.QcsHash[:], send.QcsHashSignature, cbc.pubKeys, send.Candidate)
 	if err != nil {
-		cbc.logger.Printf("[Epoch:%d] [Round:%d] Receive invalid CBC_SEND msg from [Candidate:%d].\n",
-			cbc.epoch, cbc.r, cbc.fromCandidate)
+		cbc.logger.Printf("[Epoch:%d] [Peer:%d] Receive invalid CBC_SEND msg from [Candidate:%d].\n",
+			cbc.epoch, cbc.id, cbc.fromCandidate)
 		return
 	}
+
+	cbc.logger.Printf("[Epoch:%d] [Peer:%d] has been delivered [%d] QC.\n", cbc.epoch, cbc.id, cbc.selfPath.Len())
 
 	// External validate
-	for _, roundQcs := range *send.Qcs {
+	for _, roundQcs := range send.Qcs {
 		for _, qc := range roundQcs {
 			if cbc.selfPath.Exist(qc) {
 				continue
 			}
 			for voter, sig := range qc.Signatures {
-				err := verify.VerifySignature(send.QcsHash, sig, cbc.pubKeys, voter)
+				err := verify.VerifySignature(qc.RootHash[:], sig, cbc.pubKeys, voter)
 				if err != nil {
-					cbc.logger.Printf("[Epoch:%d] [Round:%d] Receive invalid CBC_SEND msg from [Candidate:%d] caused by [QC:%d].\n",
-						cbc.epoch, cbc.r, cbc.fromCandidate, qc.Initiator)
+					cbc.logger.Printf("[Epoch:%d] [Peer:%d] Receive invalid CBC_SEND msg from [Candidate:%d] caused by [QC:%d].\n",
+						cbc.epoch, cbc.id, cbc.fromCandidate, qc.Initiator)
 					return
 				}
 			}
 		}
 	}
 
-	voteSignature, err := cbc.priKey.Sign(send.QcsHash)
+	voteSignature, err := cbc.priKey.Sign(send.QcsHash[:])
 	if err != nil {
 		cbc.logger.Println(err)
 		return
 	}
 
-	cbc.logger.Printf("[Epoch:%d] [Round:%d] [Peer:%d] Receive valid CBC_SEND msg from [Candidate:%d].\n",
-		cbc.epoch, cbc.r, cbc.id, send.Candidate)
+	cbc.logger.Printf("[Epoch:%d] [Peer:%d] Receive valid CBC_SEND msg from [Candidate:%d].\n",
+		cbc.epoch, cbc.id, send.Candidate)
 
-	cbc.qcsHash = send.QcsHash
+	if cbc.id != send.Candidate {
+		cbc.qcsHash = send.QcsHash
+		cbc.qcs = send.Qcs
+	}
 
 	ack := message.CBCACK{
 		QcsHash:       cbc.qcsHash,
@@ -183,7 +191,7 @@ func (cbc *CBC) handleCBCSend(send message.CBCSEND) {
 	}
 	ackJson, _ := json.Marshal(ack)
 
-	cbcEntrance := message.GenCBCEntrance(message.CBCAckType, cbc.r, cbc.fromCandidate, ackJson)
+	cbcEntrance := message.GenCBCEntrance(message.CBCAckType, cbc.fromCandidate, ackJson)
 	cbcEntranceJson, _ := json.Marshal(cbcEntrance)
 
 	entrance := message.GenEntrance(message.CBCType, cbc.epoch, cbcEntranceJson)
@@ -198,26 +206,26 @@ func (cbc *CBC) handleCBCSend(send message.CBCSEND) {
 }
 
 func (cbc *CBC) handleCBCAck(ack message.CBCACK) {
-	if !bytes.Equal(ack.QcsHash, cbc.qcsHash) {
+	if !bytes.Equal(ack.QcsHash[:], cbc.qcsHash[:]) {
 		return
 	}
 
 	// If receive redundant ACK, return
 	if _, ok := cbc.sigSets[ack.Voter]; ok {
-		cbc.logger.Printf("[Epoch:%d] [Round:%d] Receive redundant CBC_ACK msg from [Voter:%d].\n",
-			cbc.epoch, cbc.r, ack.Voter)
+		cbc.logger.Printf("[Epoch:%d] [Candidate:%d] Receive redundant CBC_ACK msg from [Voter:%d].\n",
+			cbc.epoch, cbc.id, ack.Voter)
 		return
 	}
 
-	err := verify.VerifySignature(ack.QcsHash, ack.VoteSignature, cbc.pubKeys, ack.Voter)
+	err := verify.VerifySignature(ack.QcsHash[:], ack.VoteSignature, cbc.pubKeys, ack.Voter)
 	if err != nil {
-		cbc.logger.Printf("[Epoch:%d] [Round:%d] Receive invalid CBC_ACK msg from [Voter:%d].\n",
-			cbc.epoch, cbc.r, ack.Voter)
+		cbc.logger.Printf("[Epoch:%d] [Candidate:%d] Receive invalid CBC_ACK msg from [Voter:%d].\n",
+			cbc.epoch, cbc.id, ack.Voter)
 		return
 	}
 
-	cbc.logger.Printf("[Epoch:%d] [Round:%d] [Candidate:%d] Receive valid CBC_ACK msg from [Voter:%d].\n",
-		cbc.epoch, cbc.r, cbc.id, ack.Voter)
+	cbc.logger.Printf("[Epoch:%d] [Candidate:%d] Receive valid CBC_ACK msg from [Voter:%d].\n",
+		cbc.epoch, cbc.id, ack.Voter)
 
 	cbc.sigSets[ack.Voter] = ack.VoteSignature
 
@@ -230,10 +238,10 @@ func (cbc *CBC) handleCBCAck(ack message.CBCACK) {
 		}
 		doneJson, _ := json.Marshal(done)
 
-		pbEntrance := message.GenPBEntrance(message.CBCDoneType, cbc.r, cbc.id, doneJson)
-		pbEntranceJson, _ := json.Marshal(pbEntrance)
+		cbcEntrance := message.GenCBCEntrance(message.CBCDoneType, cbc.id, doneJson)
+		cbcEntranceJson, _ := json.Marshal(cbcEntrance)
 
-		entrance := message.GenEntrance(message.CBCType, cbc.epoch, pbEntranceJson)
+		entrance := message.GenEntrance(message.CBCType, cbc.epoch, cbcEntranceJson)
 
 		select {
 		case <-cbc.stop:
@@ -242,8 +250,8 @@ func (cbc *CBC) handleCBCAck(ack message.CBCACK) {
 			cbc.transport.Broadcast(entrance)
 		}
 
-		cbc.logger.Printf("[Epoch:%d] [Round:%d] [Candidate:%d] Broadcast Proof.\n",
-			cbc.epoch, cbc.r, cbc.id)
+		cbc.logger.Printf("[Epoch:%d] [Candidate:%d] Broadcast Proof.\n",
+			cbc.epoch, cbc.id)
 	}
 }
 
@@ -253,13 +261,29 @@ func (cbc *CBC) handleCBCDone(done message.CBCDONE) {
 	}
 
 	for voter, sig := range done.Proof {
-		err := verify.VerifySignature(done.QcsHash, sig, cbc.pubKeys, voter)
+		err := verify.VerifySignature(done.QcsHash[:], sig, cbc.pubKeys, voter)
 		if err != nil {
-			cbc.logger.Printf("[Epoch:%d] [Round:%d] Receive invalid CBC_DONE msg from [Candidate:%d] caused by [Voter:%d].\n",
-				cbc.epoch, cbc.r, cbc.fromCandidate, voter)
+			cbc.logger.Printf("[Epoch:%d] [Peer:%d] Receive invalid CBC_DONE msg from [Candidate:%d] caused by [Voter:%d].\n",
+				cbc.epoch, cbc.id, cbc.fromCandidate, voter)
 			return
 		}
 	}
 
-	cbc.logger.Printf("[Epoch:%d] [Round:%d] deliver CBC instance [Candidate:%d].\n", cbc.epoch, cbc.r, cbc.fromCandidate)
+	cbc.logger.Printf("[Epoch:%d] [Peer:%d] deliver CBC instance [Candidate:%d].\n", cbc.epoch, cbc.id, cbc.fromCandidate)
+
+	select {
+	case <-cbc.stop:
+		return
+	default:
+		cbcOut := CBCOutput{
+			candidateId: cbc.fromCandidate,
+			qcsHash:     done.QcsHash,
+			proof:       done.Proof,
+			qcs:         &cbc.qcs,
+		}
+		cbc.epochEvent <- Event{
+			eventType: DeliverCBC,
+			payload:   cbcOut,
+		}
+	}
 }

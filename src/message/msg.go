@@ -16,5 +16,8 @@ const (
 	CBCAckType
 	CBCDoneType
 
+	// Lottery
+	LotteryType
+
 	// ABA
 )

@@ -25,7 +25,7 @@ func writedata(w *bufio.Writer, enc *json.Encoder, msg interface{}) {
 
 func main() {
 	// Create new connection
-	for i := 0; i < 1; i++ {
+	for i := 0; i < 4; i++ {
 		conn, err := net.Dial("tcp", "127.0.0.1:800"+strconv.Itoa(i))
 		if err != nil {
 			log.Fatal(err)

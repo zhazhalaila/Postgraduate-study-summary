@@ -335,14 +335,19 @@ func (pb *PB) handleDone(done message.DONE) {
 	select {
 	case <-pb.stop:
 		return
-	case pb.epochEvent <- Event{
-		eventType: DeliverPB,
-		qc: message.QuorumCert{
+	default:
+		qc := message.QuorumCert{
 			Initiator:  pb.fromInitiator,
 			Round:      pb.r,
 			RootHash:   pb.rootHash,
 			Signatures: done.Signatures,
-		},
-	}:
+		}
+
+		pbOut := PBOutput{qc: qc}
+
+		pb.epochEvent <- Event{
+			eventType: DeliverPB,
+			payload:   pbOut,
+		}
 	}
 }

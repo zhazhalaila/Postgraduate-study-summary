@@ -28,6 +28,18 @@ func NewPath(n, f, k int) *Path {
 	return p
 }
 
+// Get Path len
+func (p *Path) Len() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	l := 0
+	for i := 0; i < p.k; i++ {
+		l += len(p.qcs[i])
+	}
+	return l
+}
+
 // Check qc has been cache
 func (p *Path) Exist(qc message.QuorumCert) bool {
 	p.mu.Lock()
