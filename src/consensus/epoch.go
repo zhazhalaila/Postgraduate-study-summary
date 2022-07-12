@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"log"
 	"strconv"
+	"time"
 
 	"github.com/decred/dcrd/dcrec/secp256k1"
 	"github.com/zhazhalaila/PipelineBFT/src/libnet"
@@ -62,6 +63,7 @@ type Epoch struct {
 	pbs       map[int]map[int]*PB
 	cbcs      map[int]*CBC
 	lotteries map[int]*Lottery
+	abas      map[int]*ABA
 
 	event  chan Event
 	stopCh chan bool
@@ -95,6 +97,7 @@ func MakeEpoch(
 	e.pbs = make(map[int]map[int]*PB, e.maxRound)
 	e.cbcs = make(map[int]*CBC, e.n)
 	e.lotteries = make(map[int]*Lottery, e.n)
+	e.abas = make(map[int]*ABA, e.n)
 	e.event = make(chan Event, e.n*e.maxRound)
 	e.inCh = make(chan message.Entrance, e.n*e.n*e.maxRound)
 
@@ -124,6 +127,11 @@ func MakeEpoch(
 			e.n, e.f, e.id, e.epoch, i,
 			e.pubKey, e.priKey, e.pubKeys,
 			e.event)
+		// Create ABA instance
+		e.abas[i] = MakeABA(
+			e.logger, e.transport,
+			e.n, e.f, e.id, e.epoch, i,
+			e.pubKey, e.priKey, e.pubKeys)
 	}
 
 	go e.run()
@@ -164,6 +172,8 @@ func (e *Epoch) handleMsg(req message.Entrance) {
 		e.handleCBCEntrance(req)
 	case message.LotteryType:
 		e.handleLotteryEntrance(req)
+	case message.ABAType:
+		e.handleABAEntrance(req)
 	}
 }
 
@@ -201,6 +211,16 @@ func (e *Epoch) handleLotteryEntrance(req message.Entrance) {
 	}
 
 	e.lotteries[lotteryEntrance.LotteryTimes].Input(lotteryEntrance)
+}
+
+func (e *Epoch) handleABAEntrance(req message.Entrance) {
+	var abaEntrance message.ABAEntrance
+	err := json.Unmarshal(req.Payload, &abaEntrance)
+	if err != nil {
+		return
+	}
+
+	e.abas[abaEntrance.LotteryTimes].InputValue(abaEntrance)
 }
 
 func (e *Epoch) handleEvent(event Event) {
@@ -277,7 +297,23 @@ func (e *Epoch) handleCBCOut(cbcOut CBCOutput) {
 		return
 	}
 
-	e.broadcastCoinShare()
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+
+		for i := 0; i < 10; i++ {
+			e.logger.Printf("\n")
+		}
+
+		e.logger.Printf("[Epoch:%d] [LotteryTimes:%d] start ABA.\n", e.epoch, e.lotteryTimes)
+
+		if e.id%2 == 0 {
+			e.abas[e.lotteryTimes].InputEST(1)
+		} else {
+			e.abas[e.lotteryTimes].InputEST(0)
+		}
+	}()
+
+	// e.broadcastCoinShare()
 }
 
 func (e *Epoch) broadcastCoinShare() {

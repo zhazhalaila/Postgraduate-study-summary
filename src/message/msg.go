@@ -20,4 +20,8 @@ const (
 	LotteryType
 
 	// ABA
+	EstType
+	AuxType
+	ConfType
+	CoinType
 )

@@ -1,7 +1,11 @@
 package consensus
 
 import (
+	"crypto/sha256"
+	"encoding/json"
 	"log"
+	"strconv"
+	"sync"
 	"time"
 
 	"github.com/decred/dcrd/dcrec/secp256k1"
@@ -40,6 +44,7 @@ type ABA struct {
 
 	// Est values send status
 	estSent map[int]map[int]bool
+	estMu   sync.Mutex
 
 	// Coin shares
 	coinShares map[int]map[int][]byte
@@ -51,6 +56,7 @@ type ABA struct {
 	// public key for all peers
 	pubKeys map[int]*secp256k1.PublicKey
 
+	inCh   chan message.ABAEntrance
 	input  chan int
 	stop   chan struct{}
 	exit   chan struct{}
@@ -61,7 +67,7 @@ type ABA struct {
 func MakeABA(
 	logger *log.Logger,
 	transport *libnet.NetworkTransport,
-	n, f, id, epoch, lotteries, round int,
+	n, f, id, epoch, lotteries int,
 	pubKey *secp256k1.PublicKey,
 	priKey *secp256k1.PrivateKey,
 	pubKeys map[int]*secp256k1.PublicKey,
@@ -75,9 +81,19 @@ func MakeABA(
 	aba.epoch = epoch
 	aba.lotteries = lotteries
 	aba.round = 0
+	aba.alreadyDecide = nil
+
+	aba.binValues = make(map[int][]int)
+	aba.estValues = make(map[int]map[int][]int)
+	aba.auxValues = make(map[int]map[int][]int)
+	aba.confValues = make(map[int]map[int][]int)
+	aba.estSent = make(map[int]map[int]bool)
+	aba.coinShares = make(map[int]map[int][]byte)
+
 	aba.pubKey = pubKey
 	aba.priKey = priKey
 	aba.pubKeys = pubKeys
+	aba.inCh = make(chan message.ABAEntrance, aba.n*aba.n)
 	aba.input = make(chan int)
 	aba.stop = make(chan struct{})
 	aba.exit = make(chan struct{})
@@ -86,6 +102,18 @@ func MakeABA(
 	go aba.recv()
 	go aba.run()
 	return aba
+}
+
+func (aba *ABA) InputEST(est int) {
+	aba.input <- est
+}
+
+func (aba *ABA) InputValue(msg message.ABAEntrance) {
+	aba.inCh <- msg
+}
+
+func (aba *ABA) Stop() {
+	close(aba.stop)
 }
 
 // Chech element in slice
@@ -105,23 +133,73 @@ Loop:
 		select {
 		case <-aba.stop:
 			break Loop
+		// Not timeout, just kill goroutine after long time not see other's msg(other peers exit ABA)
 		case <-time.After(2 * time.Minute):
 			break Loop
+		case msg := <-aba.inCh:
+			aba.handleMsg(msg)
 		}
 	}
 
 	close(aba.exit)
 }
 
+func (aba *ABA) handleMsg(entrance message.ABAEntrance) {
+	switch entrance.ABAType {
+	case message.EstType:
+		var est message.EST
+		err := json.Unmarshal(entrance.Payload, &est)
+		if err != nil {
+			return
+		}
+		aba.handleEST(est)
+
+	case message.AuxType:
+		var aux message.AUX
+		err := json.Unmarshal(entrance.Payload, &aux)
+		if err != nil {
+			return
+		}
+		aba.handleAUX(aux)
+
+	case message.ConfType:
+		var conf message.CONF
+		err := json.Unmarshal(entrance.Payload, &conf)
+		if err != nil {
+			return
+		}
+		aba.handleCONF(conf)
+
+	case message.CoinType:
+		var coin message.COIN
+		err := json.Unmarshal(entrance.Payload, &coin)
+		if err != nil {
+			return
+		}
+		aba.handleCOIN(coin)
+	}
+}
+
 // ABA event handler
 func (aba *ABA) run() {
+	defer aba.logger.Printf("[Epoch:%d] [Lotteries:%d] ABA exit.\n", aba.epoch, aba.lotteries)
+
 	// Wait for input value
 	aba.est = <-aba.input
 
-	if ok := aba.estSent[aba.round][aba.est]; ok {
-		// Has broadcasted est value
+	aba.estMu.Lock()
+	if _, ok := aba.estSent[aba.round]; !ok {
+		aba.estSent[aba.round] = make(map[int]bool)
+	}
+
+	ok := aba.estSent[aba.round][aba.est]
+	aba.estMu.Unlock()
+
+	if ok {
+		aba.logger.Printf("[Epoch:%d] [Lotteries:%d] [Peer:%d] [Round:%d] has sent est.\n",
+			aba.epoch, aba.lotteries, aba.id, aba.round)
 	} else {
-		// Broadcast est value
+		aba.sendEST(aba.round, aba.est)
 	}
 
 	for {
@@ -137,6 +215,12 @@ func (aba *ABA) run() {
 				}
 			}
 		}
+
+		b := aba.binValues[aba.round][len(aba.binValues[aba.round])-1]
+		aba.logger.Printf("[Epoch:%d] [Lotteries:%d] [Round:%d] receive bin value = %d.\n",
+			aba.epoch, aba.lotteries, aba.round, b)
+		aba.sendAUX(aba.round, b)
+
 		// Wait for receive 2f+1 aux msg
 	AuxThreshold:
 		for {
@@ -149,8 +233,8 @@ func (aba *ABA) run() {
 				}
 			}
 		}
-
-		// Broadcast binary value
+		aba.logger.Printf("[Epoch:%d] [Lotteries:%d] [Round:%d] AUX decide.\n",
+			aba.epoch, aba.lotteries, aba.round)
 
 		// Wait for receive 2f+1 conf msg
 		var values int
@@ -167,18 +251,40 @@ func (aba *ABA) run() {
 				}
 			}
 		}
+		aba.logger.Printf("[Epoch:%d] [Lotteries:%d] [Round:%d] CONF decide.\n",
+			aba.epoch, aba.lotteries, aba.round)
+
 		var coin int
-		select {
-		case <-aba.exit:
-			return
-		case coin = <-aba.coinCh:
-		}
+		waitCh := make(chan struct{})
+
+		go func() {
+		WaitCoin:
+			for {
+				select {
+				case <-aba.exit:
+					return
+				case <-aba.event:
+					aba.logger.Printf("[Epoch:%d] [Lotteries:%d] [Round:%d] useless event.\n",
+						aba.epoch, aba.lotteries, aba.round)
+				case coin = <-aba.coinCh:
+					waitCh <- struct{}{}
+					break WaitCoin
+				}
+			}
+		}()
+
+		<-waitCh
+
+		aba.logger.Printf("[Epoch:%d] [Lotteries:%d] [Round:%d] ABA values=%d coin=%d.\n",
+			aba.epoch, aba.lotteries, aba.round, values, coin)
 
 		if stop := aba.setNewEst(values, coin); stop {
-			break
+			return
 		} else {
 			aba.round++
-			// Broadcast est value
+			aba.logger.Printf("[Epoch:%d] [Lotteries:%d] ABA move to [Round:%d] with [EST:%d].\n",
+				aba.epoch, aba.lotteries, aba.round, aba.est)
+			aba.sendEST(aba.round, aba.est)
 		}
 	}
 }
@@ -194,9 +300,11 @@ func (aba *ABA) setNewEst(values int, coin int) bool {
 				case <-aba.exit:
 					return stop
 				default:
-					// notify epoch current ABA was done
+					aba.logger.Printf("[Epoch:%d] [Lotteries:%d] ABA done with [Output:%d].\n",
+						aba.epoch, aba.lotteries, *aba.alreadyDecide)
 				}
 			} else if *aba.alreadyDecide == values {
+				close(aba.stop)
 				stop = true
 			}
 		}
@@ -205,20 +313,20 @@ func (aba *ABA) setNewEst(values int, coin int) bool {
 		aba.est = coin
 	}
 
-	return false
+	return stop
 }
 
 // If receive >= 2f+1 valid aux msg, broadcast conf value
 func (aba *ABA) auxThreshold(round int) bool {
 	// If receive >= 2f+1 aux msg with 1, broadcast (1.)
 	if inSlice(1, aba.binValues[round]) && len(aba.auxValues[round][1]) >= aba.n-aba.f {
-		// Broadcast Conf value (1,)
+		aba.sendConf(round, 1)
 		return true
 	}
 
 	// If receive >= 2f+1 aux msg with 0, broadcast (0.)
 	if inSlice(0, aba.binValues[round]) && len(aba.auxValues[round][0]) >= aba.n-aba.f {
-		// Broadcast Conf value (0,)
+		aba.sendConf(round, 0)
 		return true
 	}
 
@@ -228,7 +336,7 @@ func (aba *ABA) auxThreshold(round int) bool {
 		count += len(aba.auxValues[round][v])
 	}
 	if count >= aba.n-aba.f {
-		// Broadcast Conf value (0, 1)
+		aba.sendConf(round, Both)
 		return true
 	}
 	return false
@@ -238,13 +346,13 @@ func (aba *ABA) auxThreshold(round int) bool {
 func (aba *ABA) confThreshold(round int) (int, bool) {
 	// If receive >= 2f+1 conf msg with 1, set value to 1 for current round
 	if inSlice(1, aba.binValues[round]) && len(aba.confValues[round][1]) >= aba.n-aba.f {
-		// Broadcast coin share
+		aba.sendCoinShare(round)
 		return 1, true
 	}
 
 	// If receive >= 2f+1 conf msg with 0, set value to 0 for curent round
 	if inSlice(0, aba.binValues[round]) && len(aba.confValues[round][0]) >= aba.n-aba.f {
-		// Broadcast coin share
+		aba.sendCoinShare(round)
 		return 0, true
 	}
 
@@ -260,7 +368,7 @@ func (aba *ABA) confThreshold(round int) (int, bool) {
 	}
 
 	if count >= aba.n-aba.f {
-		// Broadcast coin share
+		aba.sendCoinShare(round)
 		return Both, true
 	}
 
@@ -270,60 +378,189 @@ func (aba *ABA) confThreshold(round int) (int, bool) {
 // Upon receive est msg from other nodes, do this:
 // If receive f+1 same est value, broadcast est
 // If receive 2f+1 same est value, add to binary value
-func (aba *ABA) handleEST(est message.EST, round, sender int) {
-	if ok := inSlice(sender, aba.estValues[round][est.BinValue]); ok {
+func (aba *ABA) handleEST(est message.EST) {
+	if _, ok := aba.estValues[est.Round]; !ok {
+		aba.estValues[est.Round] = make(map[int][]int)
+	}
+
+	if ok := inSlice(est.Sender, aba.estValues[est.Round][est.BinValue]); ok {
 		return
 	}
 
-	aba.estValues[round][est.BinValue] = append(aba.estValues[round][est.BinValue], sender)
+	aba.logger.Printf("[Epoch:%d] [Lotteries:%d] [Round:%d] [Peer:%d] receive [EST:%d] from [Sender:%d].\n",
+		aba.epoch, aba.lotteries, est.Round, aba.id, est.BinValue, est.Sender)
+	aba.estValues[est.Round][est.BinValue] = append(aba.estValues[est.Round][est.BinValue], est.Sender)
 
-	estCount := len(aba.estValues[round][est.BinValue])
-	estSent := aba.estSent[round][est.BinValue]
+	aba.estMu.Lock()
+	estCount := len(aba.estValues[est.Round][est.BinValue])
+	estSent := aba.estSent[est.Round][est.BinValue]
+	aba.estMu.Unlock()
 
 	if estCount == aba.f+1 && !estSent {
-		// Broadcast new est value
+		aba.sendEST(est.Round, est.BinValue)
 	}
 
 	if estCount == 2*aba.f+1 {
-		aba.binValues[round] = append(aba.binValues[round], est.BinValue)
+		if _, ok := aba.binValues[est.Round]; !ok {
+			aba.binValues[est.Round] = make([]int, 0)
+		}
+		aba.binValues[est.Round] = append(aba.binValues[est.Round], est.BinValue)
 		aba.event <- struct{}{}
 	}
 }
 
-func (aba *ABA) handleAUX(aux message.AUX, round, sender int) {
-	if ok := inSlice(sender, aba.auxValues[round][aux.Element]); ok {
+func (aba *ABA) handleAUX(aux message.AUX) {
+	if _, ok := aba.auxValues[aux.Round]; !ok {
+		aba.auxValues[aux.Round] = make(map[int][]int)
+	}
+
+	if ok := inSlice(aux.Sender, aba.auxValues[aux.Round][aux.Element]); ok {
 		return
 	}
 
-	aba.auxValues[round][aux.Element] = append(aba.auxValues[round][aux.Element], sender)
+	aba.logger.Printf("[Epoch:%d] [Lotteries:%d] [Round:%d] [Peer:%d] receive [AUX:%d] from [Sender:%d].\n",
+		aba.epoch, aba.lotteries, aux.Round, aba.id, aux.Element, aux.Sender)
+	aba.auxValues[aux.Round][aux.Element] = append(aba.auxValues[aux.Round][aux.Element], aux.Sender)
 	aba.event <- struct{}{}
 }
 
-func (aba *ABA) handleCONF(conf message.CONF, round, sender int) {
-	if ok := inSlice(sender, aba.confValues[round][conf.Value]); ok {
+func (aba *ABA) handleCONF(conf message.CONF) {
+	if _, ok := aba.confValues[conf.Round]; !ok {
+		aba.confValues[conf.Round] = make(map[int][]int)
+	}
+
+	if ok := inSlice(conf.Sender, aba.confValues[conf.Round][conf.Value]); ok {
 		return
 	}
 
-	aba.confValues[round][conf.Value] = append(aba.confValues[round][conf.Value], sender)
+	aba.logger.Printf("[Epoch:%d] [Lotteries:%d] [Round:%d] [Peer:%d] receive [CONF:%d] from [Sender:%d].\n",
+		aba.epoch, aba.lotteries, conf.Round, aba.id, conf.Value, conf.Sender)
+	aba.confValues[conf.Round][conf.Value] = append(aba.confValues[conf.Round][conf.Value], conf.Sender)
 	aba.event <- struct{}{}
 }
 
-func (aba *ABA) handleCOIN(coin message.COIN, round, sender int) {
-	err := verify.VerifySignature(coin.HashMsg, coin.Signature, aba.pubKeys, sender)
+func (aba *ABA) handleCOIN(coin message.COIN) {
+	if _, ok := aba.coinShares[coin.Round]; !ok {
+		aba.coinShares[coin.Round] = make(map[int][]byte)
+	}
+
+	err := verify.VerifySignature(coin.HashMsg, coin.Signature, aba.pubKeys, coin.Sender)
 	if err != nil {
 		return
 	}
 
-	if len(aba.coinShares[round]) > aba.f+1 {
+	aba.logger.Printf("[Epoch:%d] [Lotteries:%d] [Round:%d] [Peer:%d] receive vaild Coin Share from [Sender:%d].\n",
+		aba.epoch, aba.lotteries, coin.Round, aba.id, coin.Sender)
+
+	if len(aba.coinShares[coin.Round]) > aba.f+1 {
 		return
 	}
 
-	if _, ok := aba.coinShares[round][sender]; ok {
+	if _, ok := aba.coinShares[coin.Round][coin.Sender]; ok {
 		return
 	}
 
-	aba.coinShares[round][sender] = coin.Signature
-	if len(aba.coinShares[round]) == aba.f+1 {
+	aba.coinShares[coin.Round][coin.Sender] = coin.Signature
+	if len(aba.coinShares[coin.Round]) == aba.f+1 {
 		aba.coinCh <- int(coin.HashMsg[0]) % 2
+	}
+}
+
+func (aba *ABA) sendEST(round, est int) {
+	aba.estMu.Lock()
+	if _, ok := aba.estSent[round]; !ok {
+		aba.estSent[round] = make(map[int]bool)
+	}
+	aba.estSent[round][est] = true
+	aba.estMu.Unlock()
+
+	aba.logger.Printf("[Epoch:%d] [Lotteries:%d] [Round:%d] [Peer:%d] send [EST:%d].\n",
+		aba.epoch, aba.lotteries, round, aba.id, est)
+
+	abaEst := message.EST{
+		Round:    round,
+		Sender:   aba.id,
+		BinValue: est,
+	}
+	abaEstJson, _ := json.Marshal(abaEst)
+
+	abaEntrance := message.GenABAEntrance(message.EstType, aba.lotteries, abaEstJson)
+	abaEntranceJson, _ := json.Marshal(abaEntrance)
+
+	entrance := message.GenEntrance(message.ABAType, aba.epoch, abaEntranceJson)
+	aba.broadcastEntrance(entrance)
+}
+
+func (aba *ABA) sendAUX(round, aux int) {
+	aba.logger.Printf("[Epoch:%d] [Lotteries:%d] [Round:%d] [Peer:%d] send [AUX:%d].\n",
+		aba.epoch, aba.lotteries, round, aba.id, aux)
+	abaAux := message.AUX{
+		Round:   round,
+		Sender:  aba.id,
+		Element: aux,
+	}
+	abaAuxJson, _ := json.Marshal(abaAux)
+
+	abaEntrance := message.GenABAEntrance(message.AuxType, aba.lotteries, abaAuxJson)
+	abaEntranceJson, _ := json.Marshal(abaEntrance)
+
+	entrance := message.GenEntrance(message.ABAType, aba.epoch, abaEntranceJson)
+	aba.broadcastEntrance(entrance)
+}
+
+func (aba *ABA) sendConf(round, conf int) {
+	aba.logger.Printf("[Epoch:%d] [Lotteries:%d] [Round:%d] [Peer:%d] send [CONF:%d].\n",
+		aba.epoch, aba.lotteries, round, aba.id, conf)
+	abaConf := message.CONF{
+		Round:  round,
+		Sender: aba.id,
+		Value:  conf,
+	}
+	abaConfJson, _ := json.Marshal(abaConf)
+
+	abaEntrance := message.GenABAEntrance(message.ConfType, aba.lotteries, abaConfJson)
+	abaEntranceJson, _ := json.Marshal(abaEntrance)
+
+	entrance := message.GenEntrance(message.ABAType, aba.epoch, abaEntranceJson)
+	aba.broadcastEntrance(entrance)
+}
+
+func (aba *ABA) sendCoinShare(round int) {
+	str := strconv.Itoa(aba.lotteries) + "-" + strconv.Itoa(round)
+	strJson, err := json.Marshal(str)
+	if err != nil {
+		return
+	}
+
+	strHash := sha256.Sum256(strJson)
+	hashSignature, err := aba.priKey.Sign(strHash[:])
+	if err != nil {
+		return
+	}
+
+	aba.logger.Printf("[Epoch:%d] [Lotteries:%d] [Round:%d] [Peer:%d] broadcast coin share.\n",
+		aba.epoch, aba.lotteries, round, aba.id)
+
+	abaCoin := message.COIN{
+		Round:     round,
+		Sender:    aba.id,
+		HashMsg:   strHash[:],
+		Signature: hashSignature.Serialize(),
+	}
+	abaCoinJson, _ := json.Marshal(abaCoin)
+
+	abaEntrance := message.GenABAEntrance(message.CoinType, aba.lotteries, abaCoinJson)
+	abaEntranceJson, _ := json.Marshal(abaEntrance)
+
+	entrance := message.GenEntrance(message.ABAType, aba.epoch, abaEntranceJson)
+	aba.broadcastEntrance(entrance)
+}
+
+func (aba *ABA) broadcastEntrance(entrance message.Entrance) {
+	select {
+	case <-aba.stop:
+		return
+	default:
+		aba.transport.Broadcast(entrance)
 	}
 }
