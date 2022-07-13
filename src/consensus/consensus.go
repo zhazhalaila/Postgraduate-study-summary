@@ -100,15 +100,26 @@ func (cm *ConsensusModule) handleMsg(req message.Entrance) {
 		}
 
 		if pbEntrance.SpecificType == message.NewTransactionsType {
-			if epoch, ok := cm.epochs[cm.epoch]; ok && !epoch.Full() {
-				epoch.Input(req)
-			} else if !ok {
+			epoch, ok := cm.epochs[cm.epoch]
+			if !ok {
 				cm.inputEpoch(cm.epoch, req)
-			} else if epoch.Full() {
-				cm.epoch++
-				cm.inputEpoch(cm.epoch, req)
+				return
 			}
-			return
+
+			if ok && !epoch.Full() {
+				epoch.Input(req)
+				return
+			}
+
+			if ok && epoch.Full() {
+				cm.epoch++
+				if newEpoch, newOk := cm.epochs[cm.epoch]; newOk {
+					newEpoch.Input(req)
+				} else {
+					cm.inputEpoch(cm.epoch, req)
+				}
+				return
+			}
 		}
 	}
 
@@ -133,6 +144,7 @@ func (cm *ConsensusModule) makeNewEpoch(epoch int) *Epoch {
 }
 
 func (cm *ConsensusModule) inputEpoch(epoch int, req message.Entrance) {
+	cm.logger.Printf("[Peer:%d] Create new [Epoch:%d].\n", cm.id, epoch)
 	cm.epochs[epoch] = cm.makeNewEpoch(epoch)
 	cm.epochs[epoch].Input(req)
 }

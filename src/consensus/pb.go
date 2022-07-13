@@ -189,8 +189,8 @@ func (pb *PB) handleNewTransaction(newTxs message.NewTransaction) {
 			Initiator:         pb.id,
 			RootHash:          rootHash,
 			RootHashSignature: signature.Serialize(),
-			Branch:            &branch,
-			Share:             &shards[i],
+			Branch:            branch,
+			Share:             shards[i],
 		}
 		sendJson, _ := json.Marshal(send)
 
@@ -219,7 +219,7 @@ func (pb *PB) handleSend(send message.SEND) {
 	}
 
 	// If receive invalid merkle tree node or receive redundant SEND from initiator, return
-	if !merkletree.MerkleTreeVerify(*send.Share, send.RootHash, *send.Branch, pb.id) || (pb.partialShard != nil) {
+	if !merkletree.MerkleTreeVerify(send.Share, send.RootHash, send.Branch, pb.id) || (pb.partialShard != nil) {
 		return
 	}
 
@@ -239,9 +239,9 @@ func (pb *PB) handleSend(send message.SEND) {
 	pb.logger.Printf("[Epoch:%d] [Round:%d] [Peer:%d] Receive valid SEND msg from [Initiator:%d].\n",
 		pb.epoch, pb.r, pb.id, send.Initiator)
 
-	pb.partialShard = send.Share
+	pb.partialShard = &send.Share
 	pb.rootHash = send.RootHash
-	pb.branch = send.Branch
+	pb.branch = &send.Branch
 
 	ack := message.ACK{
 		RootHash:      send.RootHash,
@@ -343,7 +343,7 @@ func (pb *PB) handleDone(done message.DONE) {
 			Signatures: done.Signatures,
 		}
 
-		pbOut := PBOutput{qc: qc}
+		pbOut := PBOutput{rootHash: pb.rootHash, branch: pb.branch, shard: pb.partialShard, qc: qc}
 
 		pb.epochEvent <- Event{
 			eventType: DeliverPB,

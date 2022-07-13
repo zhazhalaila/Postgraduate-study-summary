@@ -15,7 +15,7 @@ import (
 )
 
 const (
-	Both = iota
+	Both = -1
 )
 
 type ABA struct {
@@ -56,6 +56,8 @@ type ABA struct {
 	// public key for all peers
 	pubKeys map[int]*secp256k1.PublicKey
 
+	epochEvent chan Event
+
 	inCh   chan message.ABAEntrance
 	input  chan int
 	stop   chan struct{}
@@ -71,7 +73,7 @@ func MakeABA(
 	pubKey *secp256k1.PublicKey,
 	priKey *secp256k1.PrivateKey,
 	pubKeys map[int]*secp256k1.PublicKey,
-) *ABA {
+	epochEvent chan Event) *ABA {
 	aba := &ABA{}
 	aba.logger = logger
 	aba.transport = transport
@@ -93,6 +95,8 @@ func MakeABA(
 	aba.pubKey = pubKey
 	aba.priKey = priKey
 	aba.pubKeys = pubKeys
+	aba.epochEvent = epochEvent
+
 	aba.inCh = make(chan message.ABAEntrance, aba.n*aba.n)
 	aba.input = make(chan int)
 	aba.stop = make(chan struct{})
@@ -275,8 +279,8 @@ func (aba *ABA) run() {
 
 		<-waitCh
 
-		aba.logger.Printf("[Epoch:%d] [Lotteries:%d] [Round:%d] ABA values=%d coin=%d.\n",
-			aba.epoch, aba.lotteries, aba.round, values, coin)
+		// aba.logger.Printf("[Epoch:%d] [Lotteries:%d] [Round:%d] ABA values=%d coin=%d.\n",
+		// 	aba.epoch, aba.lotteries, aba.round, values, coin)
 
 		if stop := aba.setNewEst(values, coin); stop {
 			return
@@ -291,6 +295,8 @@ func (aba *ABA) run() {
 
 // Set new estimate value
 func (aba *ABA) setNewEst(values int, coin int) bool {
+	aba.logger.Printf("[Epoch:%d] [Lotteries:%d] [Round:%d] set New est values=%d coin=%d.\n",
+		aba.epoch, aba.lotteries, aba.round, values, coin)
 	stop := false
 	if values != Both {
 		if values == coin {
@@ -300,14 +306,15 @@ func (aba *ABA) setNewEst(values int, coin int) bool {
 				case <-aba.exit:
 					return stop
 				default:
-					aba.logger.Printf("[Epoch:%d] [Lotteries:%d] ABA done with [Output:%d].\n",
-						aba.epoch, aba.lotteries, *aba.alreadyDecide)
+					abaOut := ABAOutput{decide: values}
+					aba.epochEvent <- Event{eventType: DeliverABA, payload: abaOut}
 				}
 			} else if *aba.alreadyDecide == values {
 				close(aba.stop)
 				stop = true
 			}
 		}
+
 		aba.est = values
 	} else {
 		aba.est = coin

@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"log"
 	"strconv"
-	"time"
 
 	"github.com/decred/dcrd/dcrec/secp256k1"
 	"github.com/zhazhalaila/PipelineBFT/src/libnet"
@@ -15,7 +14,9 @@ import (
 const (
 	DeliverPB uint8 = iota
 	DeliverCBC
-	PRODUCER
+	DeliverLottery
+	DeliverABA
+	DeliverDecision
 )
 
 type Event struct {
@@ -24,7 +25,10 @@ type Event struct {
 }
 
 type PBOutput struct {
-	qc message.QuorumCert
+	rootHash [32]byte
+	branch   *[][32]byte
+	shard    *[]byte
+	qc       message.QuorumCert
 }
 
 type CBCOutput struct {
@@ -32,6 +36,20 @@ type CBCOutput struct {
 	qcsHash     [32]byte
 	proof       map[int][]byte
 	qcs         *[][]message.QuorumCert
+}
+
+type LotteryOutput struct {
+	lotteryTimes   int
+	commonProducer int
+}
+
+type ABAOutput struct {
+	decide int
+}
+
+type DecisionOutput struct {
+	producer int
+	qcs      *[][]message.QuorumCert
 }
 
 type Epoch struct {
@@ -44,11 +62,12 @@ type Epoch struct {
 	id    int
 	epoch int
 	// maxRound reference how many rounds concurrently process in each epoch
-	maxRound     int
-	k            int
-	lotteryTimes int
-
+	maxRound       int
+	k              int
+	lotteryTimes   int
+	currProducer   int
 	broadcastedQcs bool
+	receiveAll     bool
 
 	// public key
 	pubKey *secp256k1.PublicKey
@@ -60,10 +79,14 @@ type Epoch struct {
 	path    *Path
 	cbcOuts map[int]CBCOutput
 
-	pbs       map[int]map[int]*PB
-	cbcs      map[int]*CBC
-	lotteries map[int]*Lottery
-	abas      map[int]*ABA
+	pbs          map[int]map[int]*PB
+	cbcs         map[int]*CBC
+	lotteries    map[int]*Lottery
+	abas         map[int]*ABA
+	selfDecision *DECISION
+	seltRecovery *RECOVERY
+
+	producerQcs *[][]message.QuorumCert
 
 	event  chan Event
 	stopCh chan bool
@@ -89,6 +112,7 @@ func MakeEpoch(
 	e.k = 0
 	e.lotteryTimes = 0
 	e.broadcastedQcs = false
+	e.receiveAll = false
 	e.pubKey = pubKey
 	e.priKey = priKey
 	e.pubKeys = pubKeys
@@ -131,9 +155,22 @@ func MakeEpoch(
 		e.abas[i] = MakeABA(
 			e.logger, e.transport,
 			e.n, e.f, e.id, e.epoch, i,
-			e.pubKey, e.priKey, e.pubKeys)
+			e.pubKey, e.priKey, e.pubKeys,
+			e.event)
 	}
 
+	e.selfDecision = MakeDecision(
+		e.logger, e.transport,
+		e.n, e.f, e.id, e.epoch,
+		e.pubKey, e.priKey, e.pubKeys,
+		e.event)
+
+	e.seltRecovery = MakeRecovery(
+		e.logger, e.transport,
+		e.n, e.f, e.id, e.epoch, e.maxRound,
+		e.event)
+
+	e.producerQcs = nil
 	go e.run()
 	return e
 }
@@ -174,6 +211,10 @@ func (e *Epoch) handleMsg(req message.Entrance) {
 		e.handleLotteryEntrance(req)
 	case message.ABAType:
 		e.handleABAEntrance(req)
+	case message.DecisionType:
+		e.handleDecisionEntrance(req)
+	case message.RecoveryType:
+		e.handleRecoveryEntrance(req)
 	}
 }
 
@@ -223,12 +264,38 @@ func (e *Epoch) handleABAEntrance(req message.Entrance) {
 	e.abas[abaEntrance.LotteryTimes].InputValue(abaEntrance)
 }
 
+func (e *Epoch) handleDecisionEntrance(req message.Entrance) {
+	var decisionEntrance message.Decision
+	err := json.Unmarshal(req.Payload, &decisionEntrance)
+	if err != nil {
+		return
+	}
+
+	e.selfDecision.Input(decisionEntrance)
+}
+
+func (e *Epoch) handleRecoveryEntrance(req message.Entrance) {
+	var recoveryEntrance message.RECOVERY
+	err := json.Unmarshal(req.Payload, &recoveryEntrance)
+	if err != nil {
+		return
+	}
+
+	e.seltRecovery.Input(recoveryEntrance)
+}
+
 func (e *Epoch) handleEvent(event Event) {
 	switch event.eventType {
 	case DeliverPB:
 		e.handlePBOut(event.payload.(PBOutput))
 	case DeliverCBC:
 		e.handleCBCOut(event.payload.(CBCOutput))
+	case DeliverLottery:
+		e.handleLotteryOut(event.payload.(LotteryOutput))
+	case DeliverABA:
+		e.handleABAOut(event.payload.(ABAOutput))
+	case DeliverDecision:
+		e.handleDecisionOut(event.payload.(DecisionOutput))
 	}
 }
 
@@ -237,10 +304,16 @@ func (e *Epoch) handlePBOut(pbOut PBOutput) {
 		return
 	}
 
-	e.path.Add(pbOut.qc)
+	e.path.Add(pbOut.qc, pbOut.rootHash, pbOut.branch, pbOut.shard)
+
+	e.logger.Printf("[Epoch:%d] [K:%d] [Qcs:%d].\n", e.epoch, e.k, e.path.Len())
 
 	if !e.path.RecvThreshold() || e.broadcastedQcs {
 		return
+	}
+
+	if e.producerQcs != nil && !e.receiveAll {
+		e.broadcastRecovery()
 	}
 
 	e.broadcastPath()
@@ -297,27 +370,12 @@ func (e *Epoch) handleCBCOut(cbcOut CBCOutput) {
 		return
 	}
 
-	go func() {
-		time.Sleep(100 * time.Millisecond)
-
-		for i := 0; i < 10; i++ {
-			e.logger.Printf("\n")
-		}
-
-		e.logger.Printf("[Epoch:%d] [LotteryTimes:%d] start ABA.\n", e.epoch, e.lotteryTimes)
-
-		if e.id%2 == 0 {
-			e.abas[e.lotteryTimes].InputEST(1)
-		} else {
-			e.abas[e.lotteryTimes].InputEST(0)
-		}
-	}()
-
-	// e.broadcastCoinShare()
+	e.broadcastCoinShare()
 }
 
 func (e *Epoch) broadcastCoinShare() {
-	e.logger.Printf("[Epoch:%d] [Peer:%d] broadcast Coin Share.\n", e.epoch, e.id)
+	e.logger.Printf("[Epoch:%d] [LotteryTimes:%d] [Peer:%d] broadcast Coin Share.\n",
+		e.epoch, e.lotteryTimes, e.id)
 	str := strconv.Itoa(e.epoch) + "-" + strconv.Itoa(e.lotteryTimes)
 	strJson, err := json.Marshal(str)
 	if err != nil {
@@ -336,6 +394,103 @@ func (e *Epoch) broadcastCoinShare() {
 
 	entrance := message.GenEntrance(message.LotteryType, e.epoch, lotteryJson)
 
+	select {
+	case <-e.stopCh:
+		return
+	default:
+		e.transport.Broadcast(entrance)
+	}
+}
+
+func (e *Epoch) handleLotteryOut(lotteryOut LotteryOutput) {
+	e.currProducer = lotteryOut.commonProducer
+	e.logger.Printf("[Epoch:%d] [LotteryTimes:%d] get common [Producer:%d].\n",
+		e.epoch, lotteryOut.lotteryTimes, lotteryOut.commonProducer)
+	e.logger.Printf("[Epoch:%d] [LotteryTimes:%d] start ABA.\n", e.epoch, lotteryOut.lotteryTimes)
+
+	if _, ok := e.cbcOuts[lotteryOut.commonProducer]; ok {
+		e.abas[e.lotteryTimes].InputEST(1)
+	} else {
+		e.abas[e.lotteryTimes].InputEST(0)
+	}
+}
+
+func (e *Epoch) handleABAOut(abaOut ABAOutput) {
+	e.logger.Printf("[Epoch:%d] [LotteryTimes:%d] ABA done with [Output:%d].\n",
+		e.epoch, e.lotteryTimes, abaOut.decide)
+
+	if abaOut.decide == 1 {
+		e.broadcastDecision()
+	} else {
+		e.lotteryTimes++
+		e.broadcastCoinShare()
+	}
+}
+
+func (e *Epoch) broadcastDecision() {
+	decision := message.Decision{}
+	if producerOut, ok := e.cbcOuts[e.currProducer]; !ok {
+		decision.Delivered = false
+	} else {
+		decision.Producer = e.currProducer
+		decision.Sender = e.id
+		decision.Delivered = true
+		decision.Proof = producerOut.proof
+		decision.Qcs = *producerOut.qcs
+	}
+	decisionJson, _ := json.Marshal(decision)
+
+	entrance := message.GenEntrance(message.DecisionType, e.epoch, decisionJson)
+
+	select {
+	case <-e.stopCh:
+		return
+	default:
+		e.transport.Broadcast(entrance)
+	}
+}
+
+func (e *Epoch) handleDecisionOut(decisionOut DecisionOutput) {
+	e.logger.Printf("[Epoch:%d] will commit [Producer:%d]'s proposal.\n", e.epoch, decisionOut.producer)
+	e.producerQcs = decisionOut.qcs
+	// If receive all Qcs, broadcast recovery
+	if !e.checkRecvAll() {
+		return
+	}
+
+	e.receiveAll = true
+	e.broadcastRecovery()
+}
+
+func (e *Epoch) checkRecvAll() bool {
+	for _, roundQcs := range *e.producerQcs {
+		for _, qc := range roundQcs {
+			if !e.path.Exist(qc) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func (e *Epoch) broadcastRecovery() {
+	echos := make(map[int]map[int]message.ECHO, e.maxRound)
+	for i := 0; i < e.maxRound; i++ {
+		echos[i] = make(map[int]message.ECHO)
+	}
+	for _, roundQcs := range *e.producerQcs {
+		for _, qc := range roundQcs {
+			echo := e.path.GetEcho(qc.Round, qc.Initiator)
+			echos[qc.Round][qc.Initiator] = echo
+		}
+	}
+
+	recoveryEntrance := message.GenRecovery(e.currProducer, e.id, echos)
+	recoveryEntranceJson, _ := json.Marshal(recoveryEntrance)
+
+	entrance := message.GenEntrance(message.RecoveryType, e.epoch, recoveryEntranceJson)
+
+	e.logger.Printf("[Epoch:%d] [Peer:%d] broadcast Recovery.\n", e.epoch, e.id)
 	select {
 	case <-e.stopCh:
 		return

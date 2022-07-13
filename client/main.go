@@ -37,7 +37,7 @@ func main() {
 		// Create new transaction request
 		req := message.NewTransaction{
 			ClientAddr:   conn.LocalAddr().String(),
-			Transactions: fake.FakeBatchTx(2, 1, 1, 0),
+			Transactions: fake.FakeBatchTx(2, 1, 1, i),
 		}
 		reqJson, _ := json.Marshal(req)
 

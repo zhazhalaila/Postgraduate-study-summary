@@ -32,7 +32,7 @@ type Lottery struct {
 
 	// done
 	done chan struct{}
-	// stop lc instance
+	// stop lottery instance
 	stop chan bool
 	// read data from channel
 	inCh chan message.Lottery
@@ -114,7 +114,15 @@ func (l *Lottery) handleLottery(lottery message.Lottery) {
 	l.coinShares[lottery.Sender] = lottery.LotterySignature
 
 	if len(l.coinShares) == l.f+1 {
-		l.logger.Printf("[Epoch:%d] [LotteryTimes:%d] get common [Producer:%d].\n",
-			l.epoch, l.fromLotteryTimes, int(lottery.LotteryHash[0])%l.n)
+		select {
+		case <-l.stop:
+			return
+		default:
+			lotteryOut := LotteryOutput{
+				lotteryTimes:   l.fromLotteryTimes,
+				commonProducer: int(lottery.LotteryHash[0]) % l.n,
+			}
+			l.epochEvent <- Event{eventType: DeliverLottery, payload: lotteryOut}
+		}
 	}
 }

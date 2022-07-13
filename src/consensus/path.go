@@ -8,11 +8,12 @@ import (
 )
 
 type Path struct {
-	mu  sync.Mutex
-	n   int
-	f   int
-	k   int
-	qcs [][]message.QuorumCert
+	mu    sync.Mutex
+	n     int
+	f     int
+	k     int
+	echos map[int]map[int]message.ECHO
+	qcs   [][]message.QuorumCert
 }
 
 // Construct new path
@@ -21,8 +22,10 @@ func NewPath(n, f, k int) *Path {
 	p.n = n
 	p.f = f
 	p.k = k
+	p.echos = make(map[int]map[int]message.ECHO, p.k)
 	p.qcs = make([][]message.QuorumCert, p.k)
 	for i := 0; i < p.k; i++ {
+		p.echos[i] = make(map[int]message.ECHO)
 		p.qcs[i] = make([]message.QuorumCert, 0)
 	}
 	return p
@@ -54,11 +57,17 @@ func (p *Path) Exist(qc message.QuorumCert) bool {
 }
 
 // Add path
-func (p *Path) Add(qc message.QuorumCert) {
+func (p *Path) Add(qc message.QuorumCert, rootHash [32]byte, branch *[][32]byte, shard *[]byte) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
 	p.qcs[qc.Round] = append(p.qcs[qc.Round], qc)
+	e := message.ECHO{
+		RootHash: rootHash,
+		Branch:   branch,
+		Shard:    shard,
+	}
+	p.echos[qc.Round][qc.Initiator] = e
 }
 
 // Check there are at least n-f qc for each r
@@ -80,7 +89,11 @@ func (p *Path) GetQC() [][]message.QuorumCert {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	var qcCopy [][]message.QuorumCert
-	qcCopy = p.qcs
+	qcCopy := p.qcs
 	return qcCopy
+}
+
+// Get echo
+func (p *Path) GetEcho(round, initiator int) message.ECHO {
+	return p.echos[round][initiator]
 }

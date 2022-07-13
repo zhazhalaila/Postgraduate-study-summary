@@ -11,15 +11,15 @@ type PBEntrance struct {
 
 type NewTransaction struct {
 	ClientAddr   string
-	Transactions *[][]byte
+	Transactions [][]byte
 }
 
 type SEND struct {
 	Initiator         int
 	RootHash          [32]byte
 	RootHashSignature []byte
-	Branch            *[][32]byte
-	Share             *[]byte
+	Branch            [][32]byte
+	Share             []byte
 }
 
 type ACK struct {

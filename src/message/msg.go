@@ -24,4 +24,10 @@ const (
 	AuxType
 	ConfType
 	CoinType
+
+	// Decision
+	DecisionType
+
+	// Recovery
+	RecoveryType
 )

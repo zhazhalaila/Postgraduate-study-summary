@@ -10,15 +10,15 @@ func fake250BytesTx(clientId, reqCount, peerId int) []byte {
 	buffer.WriteByte('-')
 	buffer.WriteByte(byte(peerId))
 	for i := 0; i < 245; i++ {
-		buffer.WriteByte('.')
+		buffer.WriteByte('H')
 	}
 	return buffer.Bytes()
 }
 
-func FakeBatchTx(batchSize, clientId, reqCount, peerId int) *[][]byte {
+func FakeBatchTx(batchSize, clientId, reqCount, peerId int) [][]byte {
 	txs := make([][]byte, batchSize)
 	for i := 0; i < batchSize; i++ {
 		txs[i] = fake250BytesTx(clientId, reqCount, peerId)
 	}
-	return &txs
+	return txs
 }
