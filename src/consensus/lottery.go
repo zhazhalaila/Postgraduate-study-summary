@@ -76,6 +76,10 @@ func (l *Lottery) Stop() {
 	close(l.stop)
 }
 
+func (l *Lottery) Done() <-chan struct{} {
+	return l.done
+}
+
 func (l *Lottery) run() {
 	defer func() {
 		l.done <- struct{}{}

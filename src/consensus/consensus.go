@@ -25,9 +25,10 @@ type ConsensusModule struct {
 	// public key for all peers
 	pubKeys map[int]*secp256k1.PublicKey
 
-	epochs    map[int]*Epoch
-	epochDone map[int]bool
-	epochCh   chan int
+	epochs         map[int]*Epoch
+	epochDone      map[int]bool
+	epochExitCh    chan int
+	garbageCollect chan int
 }
 
 func MakeConsensusModule(logger *log.Logger,
@@ -60,7 +61,8 @@ func MakeConsensusModule(logger *log.Logger,
 	cm.epochs = make(map[int]*Epoch)
 	cm.epochDone = make(map[int]bool)
 	// max epoch in concurrency
-	cm.epochCh = make(chan int, 100)
+	cm.epochExitCh = make(chan int, 100)
+	cm.garbageCollect = make(chan int, 100)
 	return cm
 }
 
@@ -75,11 +77,16 @@ L:
 		case req := <-cm.transport.Consume():
 			cm.handleMsg(req)
 
-		case epoch := <-cm.epochCh:
-			if _, ok := cm.epochDone[epoch]; !ok {
+		case epoch := <-cm.epochExitCh:
+			cm.logger.Printf("[Epoch:%d] done.\n", epoch)
+			if !cm.epochDone[epoch] {
+				cm.epochs[epoch].Stop()
 				cm.epochDone[epoch] = true
-				cm.epochs[epoch] = nil
 			}
+
+		case epoch := <-cm.garbageCollect:
+			cm.logger.Printf("[Epoch:%d] Garbage collected.\n", epoch)
+			cm.epochs[epoch] = nil
 
 		case <-cm.transport.Stopped():
 			break L
@@ -89,7 +96,10 @@ L:
 }
 
 func (cm *ConsensusModule) handleMsg(req message.Entrance) {
-	// cm.logger.Println("Consensus: ", req)
+	// If epoch done, skip
+	if done := cm.epochDone[req.Epoch]; done {
+		return
+	}
 
 	// If epoch not create, create it.
 	if req.ModuleType == message.PBType {
@@ -100,19 +110,8 @@ func (cm *ConsensusModule) handleMsg(req message.Entrance) {
 		}
 
 		if pbEntrance.SpecificType == message.NewTransactionsType {
-			epoch, ok := cm.epochs[cm.epoch]
-			if !ok {
-				cm.inputEpoch(cm.epoch, req)
-				return
-			}
-
-			if ok && !epoch.Full() {
-				cm.logger.Printf("[Epoch:%d] not full.\n", cm.epoch)
-				epoch.Input(req)
-				return
-			}
-
-			if ok && epoch.Full() {
+			// E.g. If receive new txs from clients, but epoch is not update
+			if cm.epochDone[cm.epoch] {
 				cm.epoch++
 				if newEpoch, newOk := cm.epochs[cm.epoch]; newOk {
 					newEpoch.Input(req)
@@ -121,26 +120,46 @@ func (cm *ConsensusModule) handleMsg(req message.Entrance) {
 				}
 				return
 			}
+
+			e, ok := cm.epochs[cm.epoch]
+			if !ok {
+				cm.inputEpoch(cm.epoch, req)
+				return
+			}
+
+			if ok && !e.Full() {
+				e.Input(req)
+				return
+			}
+
+			if ok && e.Full() {
+				cm.epoch++
+				if newEpoch, newOk := cm.epochs[cm.epoch]; newOk {
+					newEpoch.Input(req)
+				} else {
+					cm.inputEpoch(cm.epoch, req)
+				}
+				return
+			}
+
+			return
 		}
 	}
 
-	// If epoch done, skip
-	if _, ok := cm.epochDone[req.Epoch]; ok {
-		return
-	}
-
-	if epoch, ok := cm.epochs[req.Epoch]; ok {
-		epoch.Input(req)
+	if e, ok := cm.epochs[req.Epoch]; ok {
+		e.Input(req)
 	} else {
 		cm.inputEpoch(req.Epoch, req)
 	}
 }
 
 func (cm *ConsensusModule) makeNewEpoch(epoch int) *Epoch {
+	cm.epochDone[epoch] = false
 	e := MakeEpoch(
 		cm.logger, cm.transport,
 		cm.n, cm.f, cm.id, epoch, cm.maxRound,
-		cm.pubKey, cm.priKey, cm.pubKeys)
+		cm.pubKey, cm.priKey, cm.pubKeys,
+		cm.epochExitCh, cm.garbageCollect)
 	return e
 }
 

@@ -75,6 +75,10 @@ func (r *RECOVERY) Stop() {
 	close(r.stop)
 }
 
+func (r *RECOVERY) Done() <-chan struct{} {
+	return r.done
+}
+
 func (r *RECOVERY) run() {
 	defer func() {
 		r.done <- struct{}{}

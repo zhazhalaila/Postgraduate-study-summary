@@ -91,6 +91,10 @@ func (pb *PB) Stop() {
 	close(pb.stop)
 }
 
+func (pb *PB) Done() <-chan struct{} {
+	return pb.done
+}
+
 func (pb *PB) run() {
 	defer func() {
 		pb.done <- struct{}{}

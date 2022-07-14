@@ -97,9 +97,12 @@ type Epoch struct {
 
 	producerQcs *[][]message.QuorumCert
 
-	event  chan Event
-	stopCh chan bool
-	inCh   chan message.Entrance
+	event chan Event
+	stop  chan bool
+	inCh  chan message.Entrance
+
+	epochExitCh    chan int
+	garbageCollect chan int
 }
 
 func MakeEpoch(
@@ -109,7 +112,7 @@ func MakeEpoch(
 	pubKey *secp256k1.PublicKey,
 	priKey *secp256k1.PrivateKey,
 	pubKeys map[int]*secp256k1.PublicKey,
-) *Epoch {
+	epochExitCh, garbageCollect chan int) *Epoch {
 	e := &Epoch{}
 	e.logger = logger
 	e.transport = transport
@@ -133,7 +136,10 @@ func MakeEpoch(
 	e.lotteries = make(map[int]*Lottery, e.n)
 	e.abas = make(map[int]*ABA, e.n)
 	e.event = make(chan Event, e.n*e.n*e.maxRound)
+	e.stop = make(chan bool)
 	e.inCh = make(chan message.Entrance, e.n*e.n*e.maxRound)
+	e.epochExitCh = epochExitCh
+	e.garbageCollect = garbageCollect
 
 	// Initiate pb instances
 	for i := 0; i < e.maxRound; i++ {
@@ -194,14 +200,14 @@ func (e *Epoch) Input(msg message.Entrance) {
 }
 
 func (e *Epoch) Stop() {
-	close(e.stopCh)
+	close(e.stop)
 }
 
 func (e *Epoch) run() {
 L:
 	for {
 		select {
-		case <-e.stopCh:
+		case <-e.stop:
 			break L
 		case msg := <-e.inCh:
 			e.handleMsg(msg)
@@ -209,6 +215,60 @@ L:
 			e.handleEvent(event)
 		}
 	}
+
+	// Stop all PB instance
+	for i := 0; i < e.maxRound; i++ {
+		for j := 0; j < e.n; j++ {
+			e.pbs[i][j].Stop()
+		}
+	}
+
+	e.logger.Printf("[Epoch:%d] stop all PB instance.\n", e.epoch)
+
+	// Stop all CBC&&Lotery instance
+	for i := 0; i < e.n; i++ {
+		e.cbcs[i].Stop()
+		e.lotteries[i].Stop()
+	}
+
+	// Stop activated ABA instance
+	for i := 0; i < e.lotteryTimes; i++ {
+		e.abas[i].Stop()
+	}
+
+	e.logger.Printf("[Epoch:%d] stop all CBC&&Lotery&&ABA instance.\n", e.epoch)
+
+	// Stop Decision and Recovery instance
+	e.selfDecision.Stop()
+	e.seltRecovery.Stop()
+
+	e.logger.Printf("[Epoch:%d] stop Decision and Recovery instance.\n", e.epoch)
+
+	// Wait for all PB instances exit
+	for i := 0; i < e.maxRound; i++ {
+		for j := 0; j < e.n; j++ {
+			<-e.pbs[i][j].Done()
+		}
+	}
+	e.logger.Printf("[Epoch:%d] wait for all PB instances exit.\n", e.epoch)
+
+	// Wait for all CBC&&Lotery&&ABA instance exit
+	for i := 0; i < e.n; i++ {
+		<-e.cbcs[i].Done()
+		<-e.lotteries[i].Done()
+	}
+
+	for i := 0; i < e.lotteryTimes; i++ {
+		<-e.abas[i].Done()
+	}
+
+	// Wait for Decision and Recovery instance exit
+	<-e.selfDecision.Done()
+	<-e.seltRecovery.Done()
+
+	e.logger.Printf("[Epoch:%d] all sub instances done.\n", e.epoch)
+
+	e.garbageCollect <- e.epoch
 }
 
 func (e *Epoch) handleMsg(req message.Entrance) {
@@ -364,7 +424,7 @@ func (e *Epoch) broadcastPath() {
 	entrance := message.GenEntrance(message.CBCType, e.epoch, cbcEntranceJson)
 
 	select {
-	case <-e.stopCh:
+	case <-e.stop:
 		return
 	default:
 		e.transport.Broadcast(entrance)
@@ -410,7 +470,7 @@ func (e *Epoch) broadcastCoinShare() {
 	entrance := message.GenEntrance(message.LotteryType, e.epoch, lotteryJson)
 
 	select {
-	case <-e.stopCh:
+	case <-e.stop:
 		return
 	default:
 		e.transport.Broadcast(entrance)
@@ -458,7 +518,7 @@ func (e *Epoch) broadcastDecision() {
 	entrance := message.GenEntrance(message.DecisionType, e.epoch, decisionJson)
 
 	select {
-	case <-e.stopCh:
+	case <-e.stop:
 		return
 	default:
 		e.transport.Broadcast(entrance)
@@ -507,10 +567,11 @@ func (e *Epoch) broadcastRecovery() {
 
 	e.logger.Printf("[Epoch:%d] [Peer:%d] broadcast Recovery.\n", e.epoch, e.id)
 	select {
-	case <-e.stopCh:
+	case <-e.stop:
 		return
 	default:
 		e.transport.Broadcast(entrance)
+
 	}
 }
 
@@ -518,4 +579,12 @@ func (e *Epoch) handleRecoveryOut(recoveryOut RecoveryOutput) {
 	e.elapsedTime = time.Since(e.startTime)
 	e.logger.Printf("\n [Epoch:%d] [K:%d] [Batchsize:%d] within [%d] millseconds.\n",
 		e.epoch, e.maxRound, recoveryOut.batchSize, e.elapsedTime.Milliseconds())
+
+	select {
+	case <-e.stop:
+		return
+	default:
+		e.epochExitCh <- e.epoch
+		e.logger.Printf("[Epoch:%d] [Peer:%d] notify consensus epoch done.\n", e.epoch, e.id)
+	}
 }

@@ -61,6 +61,7 @@ type ABA struct {
 	inCh   chan message.ABAEntrance
 	input  chan int
 	stop   chan struct{}
+	done   chan struct{}
 	exit   chan struct{}
 	event  chan struct{}
 	coinCh chan int
@@ -100,6 +101,7 @@ func MakeABA(
 	aba.inCh = make(chan message.ABAEntrance, aba.n*aba.n*aba.n)
 	aba.input = make(chan int)
 	aba.stop = make(chan struct{})
+	aba.done = make(chan struct{})
 	aba.exit = make(chan struct{})
 	aba.event = make(chan struct{})
 	aba.coinCh = make(chan int, 20)
@@ -118,7 +120,12 @@ func (aba *ABA) InputValue(msg message.ABAEntrance) {
 }
 
 func (aba *ABA) Stop() {
+	aba.logger.Printf("[Epoch:%d] [ABAInstance:%d] close.\n", aba.epoch, aba.lotteries)
 	close(aba.stop)
+}
+
+func (aba *ABA) Done() <-chan struct{} {
+	return aba.done
 }
 
 // Chech element in slice
@@ -187,7 +194,10 @@ func (aba *ABA) handleMsg(entrance message.ABAEntrance) {
 
 // ABA event handler
 func (aba *ABA) run() {
-	defer aba.logger.Printf("[Epoch:%d] [Lotteries:%d] ABA exit.\n", aba.epoch, aba.lotteries)
+	defer func() {
+		aba.logger.Printf("[Epoch:%d] [Lotteries:%d] ABA exit.\n", aba.epoch, aba.lotteries)
+		aba.done <- struct{}{}
+	}()
 
 	// Wait for input value
 	aba.est = <-aba.input
@@ -311,7 +321,6 @@ func (aba *ABA) setNewEst(values int, coin int) bool {
 					aba.epochEvent <- Event{eventType: DeliverABA, payload: abaOut}
 				}
 			} else if *aba.alreadyDecide == values {
-				close(aba.stop)
 				stop = true
 			}
 		}

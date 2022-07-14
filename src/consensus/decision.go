@@ -76,6 +76,10 @@ func (d *DECISION) Stop() {
 	close(d.stop)
 }
 
+func (d *DECISION) Done() <-chan struct{} {
+	return d.done
+}
+
 func (d *DECISION) run() {
 	defer func() {
 		d.done <- struct{}{}

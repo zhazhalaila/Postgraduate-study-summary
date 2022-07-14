@@ -85,6 +85,10 @@ func (cbc *CBC) Stop() {
 	close(cbc.stop)
 }
 
+func (cbc *CBC) Done() <-chan struct{} {
+	return cbc.done
+}
+
 func (cbc *CBC) AssignQcsHash(qcsHash [32]byte, qcs [][]message.QuorumCert) {
 	cbc.qcsHash = qcsHash
 	cbc.qcs = qcs
