@@ -14,11 +14,12 @@ type RECOVERY struct {
 	logger    *log.Logger
 	transport *libnet.NetworkTransport
 
-	n        int
-	f        int
-	id       int
-	epoch    int
-	maxRound int
+	n         int
+	f         int
+	id        int
+	epoch     int
+	maxRound  int
+	batchSize int
 
 	// colleco all echos
 	echos      map[int]map[int]map[int]map[int]*[]byte
@@ -132,7 +133,6 @@ func (r *RECOVERY) decode(producer int) {
 			}
 			r.logger.Printf("[Epoch:%d] [Round:%d] [Initiator:%d] decode array.\n",
 				r.epoch, round, initiaitor)
-			r.logger.Println(shards)
 			decode, err := ECDecode(r.f+1, r.n-(r.f+1), shards)
 			if err != nil {
 				r.logger.Printf("[Epoch:%d] [Round:%d] decode for [Initiator:%d] error.\n",
@@ -146,8 +146,17 @@ func (r *RECOVERY) decode(producer int) {
 			}
 			r.logger.Printf("[Epoch:%d] [Round:%d] [Initiator:%d] decode transaction success.\n",
 				r.epoch, round, initiaitor)
-			r.logger.Println(transaction)
+			// r.logger.Println(transaction)
+			r.batchSize = len(transaction)
 		}
+	}
+
+	select {
+	case <-r.stop:
+		return
+	default:
+		recoveryOut := RecoveryOutput{batchSize: r.batchSize}
+		r.epochEvent <- Event{eventType: DeliverRecovery, payload: recoveryOut}
 	}
 }
 

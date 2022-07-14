@@ -97,7 +97,7 @@ func MakeABA(
 	aba.pubKeys = pubKeys
 	aba.epochEvent = epochEvent
 
-	aba.inCh = make(chan message.ABAEntrance, aba.n*aba.n)
+	aba.inCh = make(chan message.ABAEntrance, aba.n*aba.n*aba.n)
 	aba.input = make(chan int)
 	aba.stop = make(chan struct{})
 	aba.exit = make(chan struct{})
@@ -109,6 +109,7 @@ func MakeABA(
 }
 
 func (aba *ABA) InputEST(est int) {
+	aba.logger.Printf("[Epoch:%d] [LotteryTimes:%d] ABA start.\n", aba.epoch, aba.lotteries)
 	aba.input <- est
 }
 

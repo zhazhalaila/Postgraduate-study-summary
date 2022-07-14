@@ -2,11 +2,11 @@ package fake
 
 import "bytes"
 
-func fake250BytesTx(clientId, reqCount, peerId int) []byte {
+func fake250BytesTx(clientId, round, peerId int) []byte {
 	var buffer bytes.Buffer
 	buffer.WriteByte(byte(clientId))
 	buffer.WriteByte('-')
-	buffer.WriteByte(byte(reqCount))
+	buffer.WriteByte(byte(round))
 	buffer.WriteByte('-')
 	buffer.WriteByte(byte(peerId))
 	for i := 0; i < 245; i++ {
@@ -15,10 +15,10 @@ func fake250BytesTx(clientId, reqCount, peerId int) []byte {
 	return buffer.Bytes()
 }
 
-func FakeBatchTx(batchSize, clientId, reqCount, peerId int) [][]byte {
+func FakeBatchTx(batchSize, clientId, round, peerId int) [][]byte {
 	txs := make([][]byte, batchSize)
 	for i := 0; i < batchSize; i++ {
-		txs[i] = fake250BytesTx(clientId, reqCount, peerId)
+		txs[i] = fake250BytesTx(clientId, round, peerId)
 	}
 	return txs
 }

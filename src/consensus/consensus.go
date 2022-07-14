@@ -107,6 +107,7 @@ func (cm *ConsensusModule) handleMsg(req message.Entrance) {
 			}
 
 			if ok && !epoch.Full() {
+				cm.logger.Printf("[Epoch:%d] not full.\n", cm.epoch)
 				epoch.Input(req)
 				return
 			}

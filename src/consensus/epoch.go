@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"log"
 	"strconv"
+	"time"
 
 	"github.com/decred/dcrd/dcrec/secp256k1"
 	"github.com/zhazhalaila/PipelineBFT/src/libnet"
@@ -17,6 +18,7 @@ const (
 	DeliverLottery
 	DeliverABA
 	DeliverDecision
+	DeliverRecovery
 )
 
 type Event struct {
@@ -52,10 +54,17 @@ type DecisionOutput struct {
 	qcs      *[][]message.QuorumCert
 }
 
+type RecoveryOutput struct {
+	batchSize int
+}
+
 type Epoch struct {
 	// Global log
 	logger    *log.Logger
 	transport *libnet.NetworkTransport
+
+	startTime   time.Time
+	elapsedTime time.Duration
 
 	n     int
 	f     int
@@ -104,6 +113,7 @@ func MakeEpoch(
 	e := &Epoch{}
 	e.logger = logger
 	e.transport = transport
+	e.startTime = time.Now()
 	e.n = n
 	e.f = f
 	e.id = id
@@ -122,14 +132,14 @@ func MakeEpoch(
 	e.cbcs = make(map[int]*CBC, e.n)
 	e.lotteries = make(map[int]*Lottery, e.n)
 	e.abas = make(map[int]*ABA, e.n)
-	e.event = make(chan Event, e.n*e.maxRound)
+	e.event = make(chan Event, e.n*e.n*e.maxRound)
 	e.inCh = make(chan message.Entrance, e.n*e.n*e.maxRound)
 
 	// Initiate pb instances
-	for i := 0; i < maxRound; i++ {
+	for i := 0; i < e.maxRound; i++ {
 		// Create PB instance for each round
 		e.pbs[i] = make(map[int]*PB, e.n)
-		for j := 0; j < n; j++ {
+		for j := 0; j < e.n; j++ {
 			e.pbs[i][j] = MakePB(
 				e.logger, e.transport,
 				e.n, e.f, e.id, e.epoch, i, j,
@@ -226,6 +236,9 @@ func (e *Epoch) handlePBEntrance(req message.Entrance) {
 	}
 
 	if pbEntrance.SpecificType == message.NewTransactionsType {
+		if e.Full() {
+			return
+		}
 		e.pbs[e.k][e.id].Input(pbEntrance)
 		e.k++
 		e.logger.Printf("K=%d \n", e.k)
@@ -296,6 +309,8 @@ func (e *Epoch) handleEvent(event Event) {
 		e.handleABAOut(event.payload.(ABAOutput))
 	case DeliverDecision:
 		e.handleDecisionOut(event.payload.(DecisionOutput))
+	case DeliverRecovery:
+		e.handleRecoveryOut(event.payload.(RecoveryOutput))
 	}
 }
 
@@ -409,9 +424,9 @@ func (e *Epoch) handleLotteryOut(lotteryOut LotteryOutput) {
 	e.logger.Printf("[Epoch:%d] [LotteryTimes:%d] start ABA.\n", e.epoch, lotteryOut.lotteryTimes)
 
 	if _, ok := e.cbcOuts[lotteryOut.commonProducer]; ok {
-		e.abas[e.lotteryTimes].InputEST(1)
+		e.abas[lotteryOut.lotteryTimes].InputEST(1)
 	} else {
-		e.abas[e.lotteryTimes].InputEST(0)
+		e.abas[lotteryOut.lotteryTimes].InputEST(0)
 	}
 }
 
@@ -497,4 +512,10 @@ func (e *Epoch) broadcastRecovery() {
 	default:
 		e.transport.Broadcast(entrance)
 	}
+}
+
+func (e *Epoch) handleRecoveryOut(recoveryOut RecoveryOutput) {
+	e.elapsedTime = time.Since(e.startTime)
+	e.logger.Printf("\n [Epoch:%d] [K:%d] [Batchsize:%d] within [%d] millseconds.\n",
+		e.epoch, e.maxRound, recoveryOut.batchSize, e.elapsedTime.Milliseconds())
 }

@@ -162,7 +162,7 @@ func (pb *PB) handleNewTransaction(newTxs message.NewTransaction) {
 		return
 	}
 
-	pb.logger.Println(shards)
+	// pb.logger.Println(shards)
 
 	// Generate merkletree for shards
 	mt, err := merkletree.MakeMerkleTree(shards)
@@ -209,8 +209,6 @@ func (pb *PB) handleNewTransaction(newTxs message.NewTransaction) {
 }
 
 func (pb *PB) handleSend(send message.SEND) {
-	pb.logger.Println(send.Share)
-
 	// If initiator is not excecept initiator, return
 	if send.Initiator != pb.fromInitiator {
 		pb.logger.Printf("[Epoch:%d] [Round:%d] [Instance:%d] Get proposer = %d, want = %d.\n",
