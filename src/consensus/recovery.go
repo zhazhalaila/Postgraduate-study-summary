@@ -95,6 +95,7 @@ func (r *RECOVERY) run() {
 }
 
 func (r *RECOVERY) handleRecovery(recovery message.RECOVERY) {
+
 	// Check all echo all valid
 	for round, roundEchos := range recovery.Echos {
 		for initiaitor, echo := range roundEchos {

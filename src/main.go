@@ -9,6 +9,7 @@ import (
 
 	"github.com/zhazhalaila/PipelineBFT/src/consensus"
 	"github.com/zhazhalaila/PipelineBFT/src/libnet"
+	readaddress "github.com/zhazhalaila/PipelineBFT/src/readAddress"
 )
 
 func readAddress(path string, n int) ([]string, error) {
@@ -64,7 +65,7 @@ func main() {
 	cm.Run()
 
 	// Read address
-	addresses, err := readAddress("../address.txt", *n)
+	addresses, err := readaddress.ReadAddress("../address.txt", *n)
 	if err != nil {
 		log.Fatal(err)
 	}

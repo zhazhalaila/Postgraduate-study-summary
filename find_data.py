@@ -1,6 +1,7 @@
 #!/usr/bin/python3
 # Using re to find data
 import re
+import argparse
 
 def open_file(filename):
     with open(filename) as file:
@@ -20,8 +21,16 @@ def compute_latency(lines):
         latency_total += int(re.findall(r'\b\d+\b', latency_line[key])[-1])
 
     info_datas = re.findall(r'\b\d+\b', latency_line[0])
-    print('K={} BatchSize={} Average Latencty={}'.format(info_datas[1], info_datas[2], latency_total/len(latency_line)))
+    return info_datas, latency_total/len(latency_line)
 
 if __name__ == '__main__':
-    lines = open_file('log0.txt')
-    compute_latency(lines)
+    parser = argparse.ArgumentParser('start server')
+    parser.add_argument('n', help='Total file to read.', type=int)
+    args = parser.parse_args()
+    peer_latency = 0
+    for i in range(args.n):
+        lines = open_file('log'+str(i)+'.txt')
+        info_datas, latency_average = compute_latency(lines)
+        peer_latency += latency_average
+        print('Peer={} K={} BatchSize={} Average Latencty={}'.format(i, info_datas[1], info_datas[2], latency_average))
+    print('Latency average = {}millseconds'.format(peer_latency/args.n))

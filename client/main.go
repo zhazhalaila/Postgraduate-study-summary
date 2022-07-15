@@ -6,11 +6,11 @@ import (
 	"flag"
 	"log"
 	"net"
-	"strconv"
 	"time"
 
 	"github.com/zhazhalaila/PipelineBFT/src/fake"
 	"github.com/zhazhalaila/PipelineBFT/src/message"
+	readaddress "github.com/zhazhalaila/PipelineBFT/src/readAddress"
 )
 
 type remoteConn struct {
@@ -37,8 +37,12 @@ func main() {
 	flag.Parse()
 
 	remoteConns := make(map[int]remoteConn, *n)
-	for i := 0; i < *n; i++ {
-		conn, err := net.Dial("tcp", "127.0.0.1:800"+strconv.Itoa(i))
+	addresses, err := readaddress.ReadAddress("../address.txt", *n)
+	if err != nil {
+		log.Fatal(err)
+	}
+	for id, addr := range addresses {
+		conn, err := net.Dial("tcp", addr)
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -46,26 +50,32 @@ func main() {
 		w := bufio.NewWriterSize(conn, 4096)
 		enc := json.NewEncoder(w)
 
-		remoteConns[i] = remoteConn{conn: conn, w: w, enc: enc}
+		remoteConns[id] = remoteConn{conn: conn, w: w, enc: enc}
 	}
 
-	for max := 0; max < 200; max++ {
+	for max := 0; max < 100; max++ {
 		for r := 0; r < *k; r++ {
+			sendCh := make(chan struct{}, *n)
 			for i := 0; i < *n; i++ {
-				// Create new transaction request
-				req := message.NewTransaction{
-					ClientAddr:   remoteConns[i].conn.LocalAddr().String(),
-					Transactions: fake.FakeBatchTx(1, 1, r, i),
-				}
-				reqJson, _ := json.Marshal(req)
+				go func(r, i int) {
+					// Create new transaction request
+					req := message.NewTransaction{
+						ClientAddr:   remoteConns[i].conn.LocalAddr().String(),
+						Transactions: fake.FakeBatchTx(1, 1, r, i),
+					}
+					reqJson, _ := json.Marshal(req)
 
-				pbEntrance := message.GenPBEntrance(message.NewTransactionsType, -1, -1, reqJson)
-				pbEntranceJson, _ := json.Marshal(pbEntrance)
+					pbEntrance := message.GenPBEntrance(message.NewTransactionsType, -1, -1, reqJson)
+					pbEntranceJson, _ := json.Marshal(pbEntrance)
 
-				entrance := message.GenEntrance(message.PBType, -1, pbEntranceJson)
+					entrance := message.GenEntrance(message.PBType, -1, pbEntranceJson)
 
-				writedata(remoteConns[i].w, remoteConns[i].enc, entrance)
-
+					writedata(remoteConns[i].w, remoteConns[i].enc, entrance)
+					sendCh <- struct{}{}
+				}(r, i)
+			}
+			for i := 0; i < *n; i++ {
+				<-sendCh
 			}
 		}
 		time.Sleep(100 * time.Millisecond)

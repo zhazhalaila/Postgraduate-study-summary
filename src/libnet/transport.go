@@ -29,7 +29,8 @@ type NetworkTransport struct {
 	logInCh  chan remoteConn
 	logOutCh chan string
 
-	peerRegisterCh chan peer
+	peerRegisterCh   chan peer
+	unRegisterPeerCh chan int
 
 	// Send data to consensus module
 	consumeCh chan message.Entrance
@@ -49,10 +50,11 @@ type remoteConn struct {
 }
 
 type peer struct {
-	id   int
-	conn net.Conn
-	w    *bufio.Writer
-	enc  *json.Encoder
+	id    int
+	conn  net.Conn
+	w     *bufio.Writer
+	enc   *json.Encoder
+	outCh chan interface{}
 }
 
 type peerData struct {
@@ -67,6 +69,7 @@ func NewNetworkTransport(logger *log.Logger, port string) *NetworkTransport {
 	nt.logInCh = make(chan remoteConn, 100)
 	nt.logOutCh = make(chan string, 100)
 	nt.peerRegisterCh = make(chan peer, 100)
+	nt.unRegisterPeerCh = make(chan int, 100)
 	nt.consumeCh = make(chan message.Entrance, 10000)
 	nt.outBroadcastCh = make(chan interface{}, 10000)
 	nt.outSingleCh = make(chan peerData, 10000)
@@ -148,7 +151,30 @@ func (nt *NetworkTransport) ConnectAll(ipAddrs []string) error {
 		}
 		w := bufio.NewWriterSize(conn, bufSize)
 		enc := json.NewEncoder(w)
-		nt.peerRegisterCh <- peer{id: id, conn: conn, w: w, enc: enc}
+		// Start a new goroutine to send data
+		outCh := make(chan interface{}, 1000)
+		go func(id int, w *bufio.Writer, enc *json.Encoder, conn net.Conn, outCh chan interface{}) {
+			for msg := range outCh {
+				// Send the msg
+				if err := enc.Encode(msg); err != nil {
+					break
+				}
+
+				// Flush
+				if err := w.Flush(); err != nil {
+					break
+				}
+			}
+			// If error, unregister peer
+			select {
+			case <-nt.stopCh:
+				return
+			default:
+				nt.unRegisterPeerCh <- id
+			}
+
+		}(id, w, enc, conn, outCh)
+		nt.peerRegisterCh <- peer{id: id, conn: conn, w: w, enc: enc, outCh: outCh}
 	}
 	return nil
 }
@@ -190,43 +216,21 @@ func (nt *NetworkTransport) peerManger() {
 				peers[peer.id] = peer
 			}
 
+		case id := <-nt.unRegisterPeerCh:
+			delete(peers, id)
+			nt.logger.Printf("[Peer:%d] down.\n", id)
+
 		case msg := <-nt.outBroadcastCh:
-			for id, peer := range peers {
-				if err := nt.writeDataToPeer(peer.w, peer.enc, msg); err != nil {
-					nt.logger.Printf("Send data to [Peer:%d] error : %s.\n", id, err.Error())
-					peer.conn.Close()
-					delete(peers, id)
-				}
+			for _, peer := range peers {
+				peer.outCh <- msg
 			}
 
 		case peerMsg := <-nt.outSingleCh:
 			if peer, ok := peers[peerMsg.peerId]; ok {
-				if err := nt.writeDataToPeer(peer.w, peer.enc, peerMsg.msg); err != nil {
-					nt.logger.Printf("Send data to [Peer:%d] error : %s.\n", peerMsg.peerId, err.Error())
-					peer.conn.Close()
-					delete(peers, peerMsg.peerId)
-				}
+				peer.outCh <- peerMsg.msg
 			}
 		}
 	}
-}
-
-// using Flush() func write data immediately
-func (nt *NetworkTransport) writeDataToPeer(w *bufio.Writer,
-	enc *json.Encoder,
-	msg interface{}) error {
-
-	// Send the msg
-	if err := enc.Encode(msg); err != nil {
-		return err
-	}
-
-	// Flush
-	if err := w.Flush(); err != nil {
-		return err
-	}
-
-	return nil
 }
 
 // if new connect has been created cache it

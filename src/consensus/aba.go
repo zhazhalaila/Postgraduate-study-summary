@@ -5,10 +5,10 @@ import (
 	"encoding/json"
 	"log"
 	"strconv"
-	"sync"
 	"time"
 
 	"github.com/decred/dcrd/dcrec/secp256k1"
+	"github.com/sasha-s/go-deadlock"
 	"github.com/zhazhalaila/PipelineBFT/src/libnet"
 	"github.com/zhazhalaila/PipelineBFT/src/message"
 	"github.com/zhazhalaila/PipelineBFT/src/verify"
@@ -19,6 +19,7 @@ const (
 )
 
 type ABA struct {
+	mu deadlock.Mutex
 	// Global log
 	logger    *log.Logger
 	transport *libnet.NetworkTransport
@@ -44,7 +45,6 @@ type ABA struct {
 
 	// Est values send status
 	estSent map[int]map[int]bool
-	estMu   sync.Mutex
 
 	// Coin shares
 	coinShares map[int]map[int][]byte
@@ -103,7 +103,7 @@ func MakeABA(
 	aba.stop = make(chan struct{})
 	aba.done = make(chan struct{})
 	aba.exit = make(chan struct{})
-	aba.event = make(chan struct{})
+	aba.event = make(chan struct{}, aba.n*4)
 	aba.coinCh = make(chan int, 20)
 	go aba.recv()
 	go aba.run()
@@ -202,13 +202,13 @@ func (aba *ABA) run() {
 	// Wait for input value
 	aba.est = <-aba.input
 
-	aba.estMu.Lock()
+	aba.mu.Lock()
 	if _, ok := aba.estSent[aba.round]; !ok {
 		aba.estSent[aba.round] = make(map[int]bool)
 	}
 
 	ok := aba.estSent[aba.round][aba.est]
-	aba.estMu.Unlock()
+	aba.mu.Unlock()
 
 	if ok {
 		aba.logger.Printf("[Epoch:%d] [Lotteries:%d] [Peer:%d] [Round:%d] has sent est.\n",
@@ -225,13 +225,19 @@ func (aba *ABA) run() {
 			case <-aba.exit:
 				return
 			case <-aba.event:
+				aba.mu.Lock()
 				if len(aba.binValues[aba.round]) != 0 {
+					aba.mu.Unlock()
 					break WaitBinary
+				} else {
+					aba.mu.Unlock()
 				}
 			}
 		}
 
+		aba.mu.Lock()
 		b := aba.binValues[aba.round][len(aba.binValues[aba.round])-1]
+		aba.mu.Unlock()
 		aba.logger.Printf("[Epoch:%d] [Lotteries:%d] [Round:%d] receive bin value = %d.\n",
 			aba.epoch, aba.lotteries, aba.round, b)
 		aba.sendAUX(aba.round, b)
@@ -335,6 +341,9 @@ func (aba *ABA) setNewEst(values int, coin int) bool {
 
 // If receive >= 2f+1 valid aux msg, broadcast conf value
 func (aba *ABA) auxThreshold(round int) bool {
+	aba.mu.Lock()
+	defer aba.mu.Unlock()
+
 	// If receive >= 2f+1 aux msg with 1, broadcast (1.)
 	if inSlice(1, aba.binValues[round]) && len(aba.auxValues[round][1]) >= aba.n-aba.f {
 		aba.sendConf(round, 1)
@@ -361,6 +370,9 @@ func (aba *ABA) auxThreshold(round int) bool {
 
 // If receive >= 2f+1 valid aux msg, broadcast coin share
 func (aba *ABA) confThreshold(round int) (int, bool) {
+	aba.mu.Lock()
+	defer aba.mu.Unlock()
+
 	// If receive >= 2f+1 conf msg with 1, set value to 1 for current round
 	if inSlice(1, aba.binValues[round]) && len(aba.confValues[round][1]) >= aba.n-aba.f {
 		aba.sendCoinShare(round)
@@ -396,73 +408,86 @@ func (aba *ABA) confThreshold(round int) (int, bool) {
 // If receive f+1 same est value, broadcast est
 // If receive 2f+1 same est value, add to binary value
 func (aba *ABA) handleEST(est message.EST) {
+	aba.mu.Lock()
+
 	if _, ok := aba.estValues[est.Round]; !ok {
 		aba.estValues[est.Round] = make(map[int][]int)
 	}
 
 	if ok := inSlice(est.Sender, aba.estValues[est.Round][est.BinValue]); ok {
+		aba.mu.Unlock()
 		return
 	}
 
 	aba.logger.Printf("[Epoch:%d] [Lotteries:%d] [Round:%d] [Peer:%d] receive [EST:%d] from [Sender:%d].\n",
 		aba.epoch, aba.lotteries, est.Round, aba.id, est.BinValue, est.Sender)
 	aba.estValues[est.Round][est.BinValue] = append(aba.estValues[est.Round][est.BinValue], est.Sender)
-
-	aba.estMu.Lock()
 	estCount := len(aba.estValues[est.Round][est.BinValue])
 	estSent := aba.estSent[est.Round][est.BinValue]
-	aba.estMu.Unlock()
+
+	aba.mu.Unlock()
 
 	if estCount == aba.f+1 && !estSent {
 		aba.sendEST(est.Round, est.BinValue)
 	}
 
 	if estCount == 2*aba.f+1 {
+		aba.mu.Lock()
 		if _, ok := aba.binValues[est.Round]; !ok {
 			aba.binValues[est.Round] = make([]int, 0)
 		}
 		aba.binValues[est.Round] = append(aba.binValues[est.Round], est.BinValue)
+		aba.mu.Unlock()
 		aba.event <- struct{}{}
 	}
 }
 
 func (aba *ABA) handleAUX(aux message.AUX) {
+	aba.mu.Lock()
 	if _, ok := aba.auxValues[aux.Round]; !ok {
 		aba.auxValues[aux.Round] = make(map[int][]int)
 	}
 
 	if ok := inSlice(aux.Sender, aba.auxValues[aux.Round][aux.Element]); ok {
+		aba.mu.Unlock()
 		return
 	}
 
 	aba.logger.Printf("[Epoch:%d] [Lotteries:%d] [Round:%d] [Peer:%d] receive [AUX:%d] from [Sender:%d].\n",
 		aba.epoch, aba.lotteries, aux.Round, aba.id, aux.Element, aux.Sender)
 	aba.auxValues[aux.Round][aux.Element] = append(aba.auxValues[aux.Round][aux.Element], aux.Sender)
+	aba.mu.Unlock()
 	aba.event <- struct{}{}
 }
 
 func (aba *ABA) handleCONF(conf message.CONF) {
+	aba.mu.Lock()
 	if _, ok := aba.confValues[conf.Round]; !ok {
 		aba.confValues[conf.Round] = make(map[int][]int)
 	}
 
 	if ok := inSlice(conf.Sender, aba.confValues[conf.Round][conf.Value]); ok {
+		aba.mu.Unlock()
 		return
 	}
 
 	aba.logger.Printf("[Epoch:%d] [Lotteries:%d] [Round:%d] [Peer:%d] receive [CONF:%d] from [Sender:%d].\n",
 		aba.epoch, aba.lotteries, conf.Round, aba.id, conf.Value, conf.Sender)
 	aba.confValues[conf.Round][conf.Value] = append(aba.confValues[conf.Round][conf.Value], conf.Sender)
+	aba.mu.Unlock()
+
 	aba.event <- struct{}{}
 }
 
 func (aba *ABA) handleCOIN(coin message.COIN) {
+	aba.mu.Lock()
 	if _, ok := aba.coinShares[coin.Round]; !ok {
 		aba.coinShares[coin.Round] = make(map[int][]byte)
 	}
 
 	err := verify.VerifySignature(coin.HashMsg, coin.Signature, aba.pubKeys, coin.Sender)
 	if err != nil {
+		aba.mu.Unlock()
 		return
 	}
 
@@ -470,26 +495,31 @@ func (aba *ABA) handleCOIN(coin message.COIN) {
 		aba.epoch, aba.lotteries, coin.Round, aba.id, coin.Sender)
 
 	if len(aba.coinShares[coin.Round]) > aba.f+1 {
+		aba.mu.Unlock()
 		return
 	}
 
 	if _, ok := aba.coinShares[coin.Round][coin.Sender]; ok {
+		aba.mu.Unlock()
 		return
 	}
 
 	aba.coinShares[coin.Round][coin.Sender] = coin.Signature
 	if len(aba.coinShares[coin.Round]) == aba.f+1 {
+		aba.mu.Unlock()
 		aba.coinCh <- int(coin.HashMsg[0]) % 2
+	} else {
+		aba.mu.Unlock()
 	}
 }
 
 func (aba *ABA) sendEST(round, est int) {
-	aba.estMu.Lock()
+	aba.mu.Lock()
 	if _, ok := aba.estSent[round]; !ok {
 		aba.estSent[round] = make(map[int]bool)
 	}
 	aba.estSent[round][est] = true
-	aba.estMu.Unlock()
+	aba.mu.Unlock()
 
 	aba.logger.Printf("[Epoch:%d] [Lotteries:%d] [Round:%d] [Peer:%d] send [EST:%d].\n",
 		aba.epoch, aba.lotteries, round, aba.id, est)
