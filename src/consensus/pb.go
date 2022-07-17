@@ -2,13 +2,13 @@ package consensus
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"log"
 
 	"github.com/decred/dcrd/dcrec/secp256k1"
 	"github.com/zhazhalaila/PipelineBFT/src/libnet"
-	merkletree "github.com/zhazhalaila/PipelineBFT/src/merkleTree"
 	"github.com/zhazhalaila/PipelineBFT/src/message"
 	"github.com/zhazhalaila/PipelineBFT/src/verify"
 )
@@ -31,9 +31,8 @@ type PB struct {
 	fromInitiator     int
 	preparedThreshold int
 
-	partialShard *[]byte
-	rootHash     [32]byte
-	branch       *[][32]byte
+	txsHash [32]byte
+	txs     *[][]byte
 	// collect all voters' signatures, only initiator do this
 	sigSets map[int][]byte
 
@@ -160,55 +159,34 @@ func (pb *PB) handleNewTransaction(newTxs message.NewTransaction) {
 		return
 	}
 
-	// Erasure code schema
-	shards, err := ECEncode(pb.f+1, pb.n-(pb.f+1), txsBytes)
-	if err != nil {
-		return
-	}
-
-	// pb.logger.Println(shards)
-
-	// Generate merkletree for shards
-	mt, err := merkletree.MakeMerkleTree(shards)
-	if err != nil {
-		return
-	}
-
-	// Get merkletree root
-	rootHash := mt[1]
-	pb.rootHash = rootHash
+	txsHash := sha256.Sum256(txsBytes)
+	pb.txsHash = txsHash
 
 	// Sign merkletree root
-	signature, err := pb.priKey.Sign(rootHash[:])
+	signature, err := pb.priKey.Sign(txsHash[:])
 	if err != nil {
 		pb.logger.Printf("[Epoch:%d] [Round:%d] [Initiator:%d] generate signature for txs failed.\n",
 			pb.epoch, pb.r, pb.id)
 	}
 
-	// Broadcast shards to all nodes
-	for i := 0; i < pb.n; i++ {
-		branch := merkletree.GetMerkleBranch(i, mt)
+	send := message.SEND{
+		Initiator: pb.id,
+		Txs:       newTxs.Transactions,
+		TxsHash:   txsHash,
+		Signature: signature.Serialize(),
+	}
+	sendJson, _ := json.Marshal(send)
 
-		send := message.SEND{
-			Initiator:         pb.id,
-			RootHash:          rootHash,
-			RootHashSignature: signature.Serialize(),
-			Branch:            branch,
-			Share:             shards[i],
-		}
-		sendJson, _ := json.Marshal(send)
+	pbEntrance := message.GenPBEntrance(message.SendType, pb.r, pb.id, sendJson)
+	pbEntrancsJson, _ := json.Marshal(pbEntrance)
 
-		pbEntrance := message.GenPBEntrance(message.SendType, pb.r, pb.id, sendJson)
-		pbEntrancsJson, _ := json.Marshal(pbEntrance)
+	entrance := message.GenEntrance(message.PBType, pb.epoch, pbEntrancsJson)
 
-		entrance := message.GenEntrance(message.PBType, pb.epoch, pbEntrancsJson)
-
-		select {
-		case <-pb.stop:
-			return
-		default:
-			pb.transport.SendToPeer(i, entrance)
-		}
+	select {
+	case <-pb.stop:
+		return
+	default:
+		pb.transport.Broadcast(entrance)
 	}
 }
 
@@ -220,19 +198,14 @@ func (pb *PB) handleSend(send message.SEND) {
 		return
 	}
 
-	// If receive invalid merkle tree node or receive redundant SEND from initiator, return
-	if !merkletree.MerkleTreeVerify(send.Share, send.RootHash, send.Branch, pb.id) || (pb.partialShard != nil) {
-		return
-	}
-
-	err := verify.VerifySignature(send.RootHash[:], send.RootHashSignature, pb.pubKeys, send.Initiator)
+	err := verify.VerifySignature(send.TxsHash[:], send.Signature, pb.pubKeys, send.Initiator)
 	if err != nil {
 		pb.logger.Printf("[Epoch:%d] [Round:%d] Receive invalid SEND msg from [Initiator:%d].\n",
 			pb.epoch, pb.r, pb.fromInitiator)
 		return
 	}
 
-	voteSignature, err := pb.priKey.Sign(send.RootHash[:])
+	voteSignature, err := pb.priKey.Sign(send.TxsHash[:])
 	if err != nil {
 		pb.logger.Println(err)
 		return
@@ -241,12 +214,11 @@ func (pb *PB) handleSend(send message.SEND) {
 	pb.logger.Printf("[Epoch:%d] [Round:%d] [Peer:%d] Receive valid SEND msg from [Initiator:%d].\n",
 		pb.epoch, pb.r, pb.id, send.Initiator)
 
-	pb.partialShard = &send.Share
-	pb.rootHash = send.RootHash
-	pb.branch = &send.Branch
+	pb.txsHash = send.TxsHash
+	pb.txs = &send.Txs
 
 	ack := message.ACK{
-		RootHash:      send.RootHash,
+		TxsHash:       pb.txsHash,
 		VoteSignature: voteSignature.Serialize(),
 		Voter:         pb.id,
 	}
@@ -269,7 +241,7 @@ func (pb *PB) handleSend(send message.SEND) {
 // Only initiator do this
 func (pb *PB) handleAck(ack message.ACK) {
 	// If ack.rootHash != pb.rootHash, return.
-	if !bytes.Equal(ack.RootHash[:], pb.rootHash[:]) {
+	if !bytes.Equal(ack.TxsHash[:], pb.txsHash[:]) {
 		return
 	}
 
@@ -280,7 +252,7 @@ func (pb *PB) handleAck(ack message.ACK) {
 		return
 	}
 
-	err := verify.VerifySignature(ack.RootHash[:], ack.VoteSignature, pb.pubKeys, ack.Voter)
+	err := verify.VerifySignature(ack.TxsHash[:], ack.VoteSignature, pb.pubKeys, ack.Voter)
 	if err != nil {
 		pb.logger.Printf("[Epoch:%d] [Round:%d] Receive invalid ACK msg from [Voter:%d].\n",
 			pb.epoch, pb.r, ack.Voter)
@@ -296,7 +268,7 @@ func (pb *PB) handleAck(ack message.ACK) {
 	if len(pb.sigSets) == 2*pb.f+1 {
 		done := message.DONE{
 			Initiator:  pb.id,
-			RootHash:   pb.rootHash,
+			TxsHash:    pb.txsHash,
 			Signatures: pb.sigSets,
 		}
 		doneJson, _ := json.Marshal(done)
@@ -324,7 +296,7 @@ func (pb *PB) handleDone(done message.DONE) {
 	}
 
 	for voter, sig := range done.Signatures {
-		err := verify.VerifySignature(done.RootHash[:], sig, pb.pubKeys, voter)
+		err := verify.VerifySignature(done.TxsHash[:], sig, pb.pubKeys, voter)
 		if err != nil {
 			pb.logger.Printf("[Epoch:%d] [Round:%d] Receive invalid DONE msg from [Initiator:%d] caused by [Voter:%d].\n",
 				pb.epoch, pb.r, pb.fromInitiator, voter)
@@ -341,11 +313,11 @@ func (pb *PB) handleDone(done message.DONE) {
 		qc := message.QuorumCert{
 			Initiator:  pb.fromInitiator,
 			Round:      pb.r,
-			RootHash:   pb.rootHash,
+			TxsHash:    pb.txsHash,
 			Signatures: done.Signatures,
 		}
 
-		pbOut := PBOutput{rootHash: pb.rootHash, branch: pb.branch, shard: pb.partialShard, qc: qc}
+		pbOut := PBOutput{txsHash: pb.txsHash, txs: pb.txs, qc: qc}
 
 		pb.epochEvent <- Event{
 			eventType: DeliverPB,

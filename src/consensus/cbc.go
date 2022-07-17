@@ -164,7 +164,7 @@ func (cbc *CBC) handleCBCSend(send message.CBCSEND) {
 				continue
 			}
 			for voter, sig := range qc.Signatures {
-				err := verify.VerifySignature(qc.RootHash[:], sig, cbc.pubKeys, voter)
+				err := verify.VerifySignature(qc.TxsHash[:], sig, cbc.pubKeys, voter)
 				if err != nil {
 					cbc.logger.Printf("[Epoch:%d] [Peer:%d] Receive invalid CBC_SEND msg from [Candidate:%d] caused by [QC:%d].\n",
 						cbc.epoch, cbc.id, cbc.fromCandidate, qc.Initiator)

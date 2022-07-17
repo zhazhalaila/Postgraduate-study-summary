@@ -15,22 +15,21 @@ type NewTransaction struct {
 }
 
 type SEND struct {
-	Initiator         int
-	RootHash          [32]byte
-	RootHashSignature []byte
-	Branch            [][32]byte
-	Share             []byte
+	Initiator int
+	Txs       [][]byte
+	TxsHash   [32]byte
+	Signature []byte
 }
 
 type ACK struct {
-	RootHash      [32]byte
+	TxsHash       [32]byte
 	VoteSignature []byte
 	Voter         int
 }
 
 type DONE struct {
 	Initiator  int
-	RootHash   [32]byte
+	TxsHash    [32]byte
 	Signatures map[int][]byte
 }
 

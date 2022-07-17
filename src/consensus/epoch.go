@@ -18,7 +18,6 @@ const (
 	DeliverLottery
 	DeliverABA
 	DeliverDecision
-	DeliverRecovery
 )
 
 type Event struct {
@@ -27,10 +26,9 @@ type Event struct {
 }
 
 type PBOutput struct {
-	rootHash [32]byte
-	branch   *[][32]byte
-	shard    *[]byte
-	qc       message.QuorumCert
+	txsHash [32]byte
+	txs     *[][]byte
+	qc      message.QuorumCert
 }
 
 type CBCOutput struct {
@@ -93,7 +91,6 @@ type Epoch struct {
 	lotteries    map[int]*Lottery
 	abas         map[int]*ABA
 	selfDecision *DECISION
-	seltRecovery *RECOVERY
 
 	producerQcs *[][]message.QuorumCert
 
@@ -181,11 +178,6 @@ func MakeEpoch(
 		e.pubKey, e.priKey, e.pubKeys,
 		e.event)
 
-	e.seltRecovery = MakeRecovery(
-		e.logger, e.transport,
-		e.n, e.f, e.id, e.epoch, e.maxRound,
-		e.event)
-
 	e.producerQcs = nil
 	go e.run()
 	return e
@@ -240,7 +232,6 @@ L:
 
 	// Stop Decision and Recovery instance
 	e.selfDecision.Stop()
-	e.seltRecovery.Stop()
 
 	e.logger.Printf("[Epoch:%d] stop Decision and Recovery instance.\n", e.epoch)
 
@@ -264,7 +255,6 @@ L:
 
 	// Wait for Decision and Recovery instance exit
 	<-e.selfDecision.Done()
-	<-e.seltRecovery.Done()
 
 	e.logger.Printf("[Epoch:%d] all sub instances done.\n", e.epoch)
 
@@ -283,8 +273,6 @@ func (e *Epoch) handleMsg(req message.Entrance) {
 		e.handleABAEntrance(req)
 	case message.DecisionType:
 		e.handleDecisionEntrance(req)
-	case message.RecoveryType:
-		e.handleRecoveryEntrance(req)
 	}
 }
 
@@ -347,16 +335,6 @@ func (e *Epoch) handleDecisionEntrance(req message.Entrance) {
 	e.selfDecision.Input(decisionEntrance)
 }
 
-func (e *Epoch) handleRecoveryEntrance(req message.Entrance) {
-	var recoveryEntrance message.RECOVERY
-	err := json.Unmarshal(req.Payload, &recoveryEntrance)
-	if err != nil {
-		return
-	}
-
-	e.seltRecovery.Input(recoveryEntrance)
-}
-
 func (e *Epoch) handleEvent(event Event) {
 	switch event.eventType {
 	case DeliverPB:
@@ -369,8 +347,6 @@ func (e *Epoch) handleEvent(event Event) {
 		e.handleABAOut(event.payload.(ABAOutput))
 	case DeliverDecision:
 		e.handleDecisionOut(event.payload.(DecisionOutput))
-	case DeliverRecovery:
-		e.handleRecoveryOut(event.payload.(RecoveryOutput))
 	}
 }
 
@@ -379,7 +355,7 @@ func (e *Epoch) handlePBOut(pbOut PBOutput) {
 		return
 	}
 
-	e.path.Add(pbOut.qc, pbOut.rootHash, pbOut.branch, pbOut.shard)
+	e.path.Add(pbOut.qc, pbOut.txs)
 
 	e.logger.Printf("[Epoch:%d] [K:%d] [Qcs:%d].\n", e.epoch, e.k, e.path.Len())
 
@@ -387,8 +363,11 @@ func (e *Epoch) handlePBOut(pbOut PBOutput) {
 		return
 	}
 
+	// FIX recovery error
 	if e.producerQcs != nil && !e.receiveAll {
-		e.broadcastRecovery()
+		if e.checkRecvAll() {
+			e.decideOut(e.path.GetBatchSize())
+		}
 	}
 
 	e.broadcastPath()
@@ -534,7 +513,7 @@ func (e *Epoch) handleDecisionOut(decisionOut DecisionOutput) {
 	}
 
 	e.receiveAll = true
-	e.broadcastRecovery()
+	e.decideOut(e.path.GetBatchSize())
 }
 
 func (e *Epoch) checkRecvAll() bool {
@@ -548,37 +527,10 @@ func (e *Epoch) checkRecvAll() bool {
 	return true
 }
 
-func (e *Epoch) broadcastRecovery() {
-	echos := make(map[int]map[int]message.ECHO, e.maxRound)
-	for i := 0; i < e.maxRound; i++ {
-		echos[i] = make(map[int]message.ECHO)
-	}
-	for _, roundQcs := range *e.producerQcs {
-		for _, qc := range roundQcs {
-			echo := e.path.GetEcho(qc.Round, qc.Initiator)
-			echos[qc.Round][qc.Initiator] = echo
-		}
-	}
-
-	recoveryEntrance := message.GenRecovery(e.currProducer, e.id, echos)
-	recoveryEntranceJson, _ := json.Marshal(recoveryEntrance)
-
-	entrance := message.GenEntrance(message.RecoveryType, e.epoch, recoveryEntranceJson)
-
-	e.logger.Printf("[Epoch:%d] [Peer:%d] broadcast Recovery.\n", e.epoch, e.id)
-	select {
-	case <-e.stop:
-		return
-	default:
-		e.transport.Broadcast(entrance)
-
-	}
-}
-
-func (e *Epoch) handleRecoveryOut(recoveryOut RecoveryOutput) {
+func (e *Epoch) decideOut(batchSize int) {
 	e.elapsedTime = time.Since(e.startTime)
 	e.logger.Printf("\n [Epoch:%d] [K:%d] [Batchsize:%d] within [%d] millseconds.\n",
-		e.epoch, e.maxRound, recoveryOut.batchSize, e.elapsedTime.Milliseconds())
+		e.epoch, e.maxRound, batchSize, e.elapsedTime.Milliseconds())
 
 	select {
 	case <-e.stop:

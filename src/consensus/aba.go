@@ -294,7 +294,13 @@ func (aba *ABA) run() {
 			}
 		}()
 
-		<-waitCh
+		// FIX unrelease aba instance bug
+		select {
+		case <-aba.exit:
+			return
+		default:
+			<-waitCh
+		}
 
 		// aba.logger.Printf("[Epoch:%d] [Lotteries:%d] [Round:%d] ABA values=%d coin=%d.\n",
 		// 	aba.epoch, aba.lotteries, aba.round, values, coin)
