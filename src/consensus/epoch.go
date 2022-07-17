@@ -52,10 +52,6 @@ type DecisionOutput struct {
 	qcs      *[][]message.QuorumCert
 }
 
-type RecoveryOutput struct {
-	batchSize int
-}
-
 type Epoch struct {
 	// Global log
 	logger    *log.Logger
@@ -224,7 +220,7 @@ L:
 	}
 
 	// Stop activated ABA instance
-	for i := 0; i < e.lotteryTimes; i++ {
+	for i := 0; i < e.n; i++ {
 		e.abas[i].Stop()
 	}
 
@@ -249,7 +245,7 @@ L:
 		<-e.lotteries[i].Done()
 	}
 
-	for i := 0; i < e.lotteryTimes; i++ {
+	for i := 0; i < e.n; i++ {
 		<-e.abas[i].Done()
 	}
 
@@ -363,12 +359,12 @@ func (e *Epoch) handlePBOut(pbOut PBOutput) {
 		return
 	}
 
-	// FIX recovery error
-	if e.producerQcs != nil && !e.receiveAll {
-		if e.checkRecvAll() {
-			e.decideOut(e.path.GetBatchSize())
-		}
-	}
+	// // FIX recovery error
+	// if e.producerQcs != nil && !e.receiveAll {
+	// 	if e.checkRecvAll() {
+	// 		e.decideOut(e.path.GetBatchSize())
+	// 	}
+	// }
 
 	e.broadcastPath()
 }
@@ -509,10 +505,12 @@ func (e *Epoch) handleDecisionOut(decisionOut DecisionOutput) {
 	e.producerQcs = decisionOut.qcs
 	// If receive all Qcs, broadcast recovery
 	if !e.checkRecvAll() {
-		return
+		e.logger.Printf("[Epoch:%d] not receive all proposals.\n", e.epoch)
+		// return
 	}
 
-	e.receiveAll = true
+	// e.receiveAll = true
+
 	e.decideOut(e.path.GetBatchSize())
 }
 

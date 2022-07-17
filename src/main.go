@@ -1,10 +1,10 @@
 package main
 
 import (
-	"bufio"
 	"flag"
 	"log"
 	"os"
+	"runtime"
 	"time"
 
 	"github.com/zhazhalaila/PipelineBFT/src/consensus"
@@ -12,28 +12,17 @@ import (
 	readaddress "github.com/zhazhalaila/PipelineBFT/src/readAddress"
 )
 
-func readAddress(path string, n int) ([]string, error) {
-	file, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer file.Close()
+func PrintMemUsage(logger *log.Logger) {
+	var m runtime.MemStats
+	runtime.ReadMemStats(&m)
+	// For info on each, see: https://golang.org/pkg/runtime/#MemStats
+	logger.Printf("Alloc = %v MiB.\n", bToMb(m.Alloc))
+	logger.Printf("Sys = %v MiB\n", bToMb(m.Sys))
+	logger.Printf("NumGC = %v\n", m.NumGC)
+}
 
-	var lines []string
-	scanner := bufio.NewScanner(file)
-	for scanner.Scan() {
-		n--
-		if n < 0 {
-			break
-		}
-		lines = append(lines, scanner.Text())
-	}
-
-	if scanner.Err() != nil {
-		return nil, err
-	}
-
-	return lines, nil
+func bToMb(b uint64) uint64 {
+	return b / 1024 / 1024
 }
 
 func main() {
@@ -76,6 +65,14 @@ func main() {
 		err := transport.ConnectAll(addresses)
 		if err != nil {
 			log.Fatal(err)
+		}
+	}()
+
+	go func() {
+		for {
+			time.Sleep(10 * time.Second)
+			logger.Printf("Runtime Goroutine = [%d].\n", runtime.NumGoroutine())
+			PrintMemUsage(logger)
 		}
 	}()
 

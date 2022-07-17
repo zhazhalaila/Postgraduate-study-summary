@@ -152,7 +152,7 @@ Loop:
 			aba.handleMsg(msg)
 		}
 	}
-
+	aba.logger.Printf("[Epoch:%d] [ABAInstanceId:%d] receive stop from epoch.\n", aba.epoch, aba.lotteries)
 	close(aba.exit)
 }
 
@@ -200,7 +200,12 @@ func (aba *ABA) run() {
 	}()
 
 	// Wait for input value
-	aba.est = <-aba.input
+	select {
+	case <-aba.exit:
+		aba.logger.Printf("[Epoch:%d] [ABAInstanceId:%d] capture exit signal.\n", aba.epoch, aba.lotteries)
+		return
+	case aba.est = <-aba.input:
+	}
 
 	aba.mu.Lock()
 	if _, ok := aba.estSent[aba.round]; !ok {
@@ -214,7 +219,12 @@ func (aba *ABA) run() {
 		aba.logger.Printf("[Epoch:%d] [Lotteries:%d] [Peer:%d] [Round:%d] has sent est.\n",
 			aba.epoch, aba.lotteries, aba.id, aba.round)
 	} else {
-		aba.sendEST(aba.round, aba.est)
+		select {
+		case <-aba.exit:
+			return
+		default:
+			aba.sendEST(aba.round, aba.est)
+		}
 	}
 
 	for {
@@ -240,7 +250,12 @@ func (aba *ABA) run() {
 		aba.mu.Unlock()
 		aba.logger.Printf("[Epoch:%d] [Lotteries:%d] [Round:%d] receive bin value = %d.\n",
 			aba.epoch, aba.lotteries, aba.round, b)
-		aba.sendAUX(aba.round, b)
+		select {
+		case <-aba.exit:
+			return
+		default:
+			aba.sendAUX(aba.round, b)
+		}
 
 		// Wait for receive 2f+1 aux msg
 	AuxThreshold:
@@ -276,10 +291,9 @@ func (aba *ABA) run() {
 			aba.epoch, aba.lotteries, aba.round)
 
 		var coin int
-		waitCh := make(chan struct{})
+		waitCh := make(chan struct{}, 1)
 
 		go func() {
-		WaitCoin:
 			for {
 				select {
 				case <-aba.exit:
@@ -288,8 +302,12 @@ func (aba *ABA) run() {
 					aba.logger.Printf("[Epoch:%d] [Lotteries:%d] [Round:%d] useless event.\n",
 						aba.epoch, aba.lotteries, aba.round)
 				case coin = <-aba.coinCh:
-					waitCh <- struct{}{}
-					break WaitCoin
+					select {
+					case <-aba.exit:
+						return
+					case waitCh <- struct{}{}:
+					}
+					return
 				}
 			}
 		}()
@@ -298,8 +316,7 @@ func (aba *ABA) run() {
 		select {
 		case <-aba.exit:
 			return
-		default:
-			<-waitCh
+		case <-waitCh:
 		}
 
 		// aba.logger.Printf("[Epoch:%d] [Lotteries:%d] [Round:%d] ABA values=%d coin=%d.\n",
@@ -311,7 +328,12 @@ func (aba *ABA) run() {
 			aba.round++
 			aba.logger.Printf("[Epoch:%d] [Lotteries:%d] ABA move to [Round:%d] with [EST:%d].\n",
 				aba.epoch, aba.lotteries, aba.round, aba.est)
-			aba.sendEST(aba.round, aba.est)
+			select {
+			case <-aba.exit:
+				return
+			default:
+				aba.sendEST(aba.round, aba.est)
+			}
 		}
 	}
 }

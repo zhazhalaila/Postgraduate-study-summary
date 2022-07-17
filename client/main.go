@@ -53,7 +53,7 @@ func main() {
 		remoteConns[id] = remoteConn{conn: conn, w: w, enc: enc}
 	}
 
-	for max := 0; max < 10; max++ {
+	for max := 0; max < 20; max++ {
 		for r := 0; r < *k; r++ {
 			sendCh := make(chan struct{}, *n)
 			for i := 0; i < *n; i++ {
@@ -78,7 +78,7 @@ func main() {
 				<-sendCh
 			}
 		}
-		time.Sleep(200 * time.Millisecond)
+		time.Sleep(400 * time.Millisecond)
 	}
 
 	for i := 0; i < *n; i++ {
