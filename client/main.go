@@ -53,7 +53,7 @@ func main() {
 		remoteConns[id] = remoteConn{conn: conn, w: w, enc: enc}
 	}
 
-	for max := 0; max < 20; max++ {
+	for max := 0; max < 10; max++ {
 		for r := 0; r < *k; r++ {
 			sendCh := make(chan struct{}, *n)
 			for i := 0; i < *n; i++ {
@@ -61,7 +61,7 @@ func main() {
 					// Create new transaction request
 					req := message.NewTransaction{
 						ClientAddr:   remoteConns[i].conn.LocalAddr().String(),
-						Transactions: fake.FakeBatchTx(1024, 1, r, i),
+						Transactions: fake.FakeBatchTx(1, 1, r, i),
 					}
 					reqJson, _ := json.Marshal(req)
 

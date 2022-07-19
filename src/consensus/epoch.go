@@ -72,6 +72,9 @@ type Epoch struct {
 	broadcastedQcs bool
 	receiveAll     bool
 
+	// count message len
+	bytesCount int
+
 	// public key
 	pubKey *secp256k1.PublicKey
 	// private key
@@ -119,6 +122,7 @@ func MakeEpoch(
 	e.lotteryTimes = 0
 	e.broadcastedQcs = false
 	e.receiveAll = false
+	e.bytesCount = 0
 	e.pubKey = pubKey
 	e.priKey = priKey
 	e.pubKeys = pubKeys
@@ -199,6 +203,7 @@ L:
 			break L
 		case msg := <-e.inCh:
 			e.handleMsg(msg)
+			e.bytesCount += len(msg.Payload)
 		case event := <-e.event:
 			e.handleEvent(event)
 		}
@@ -359,12 +364,12 @@ func (e *Epoch) handlePBOut(pbOut PBOutput) {
 		return
 	}
 
-	// // FIX recovery error
-	// if e.producerQcs != nil && !e.receiveAll {
-	// 	if e.checkRecvAll() {
-	// 		e.decideOut(e.path.GetBatchSize())
-	// 	}
-	// }
+	// FIX recovery error
+	if e.producerQcs != nil && !e.receiveAll {
+		if e.checkRecvAll() {
+			e.decideOut(e.path.GetBatchSize())
+		}
+	}
 
 	e.broadcastPath()
 }
@@ -506,10 +511,10 @@ func (e *Epoch) handleDecisionOut(decisionOut DecisionOutput) {
 	// If receive all Qcs, broadcast recovery
 	if !e.checkRecvAll() {
 		e.logger.Printf("[Epoch:%d] not receive all proposals.\n", e.epoch)
-		// return
+		return
 	}
 
-	// e.receiveAll = true
+	e.receiveAll = true
 
 	e.decideOut(e.path.GetBatchSize())
 }
@@ -529,6 +534,7 @@ func (e *Epoch) decideOut(batchSize int) {
 	e.elapsedTime = time.Since(e.startTime)
 	e.logger.Printf("\n [Epoch:%d] [K:%d] [Batchsize:%d] within [%d] millseconds.\n",
 		e.epoch, e.maxRound, batchSize, e.elapsedTime.Milliseconds())
+	e.logger.Printf("[Epoch:%d] receive [%d]bytes.\n", e.epoch, e.bytesCount)
 
 	select {
 	case <-e.stop:
