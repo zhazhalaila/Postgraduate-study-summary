@@ -61,7 +61,7 @@ func main() {
 					// Create new transaction request
 					req := message.NewTransaction{
 						ClientAddr:   remoteConns[i].conn.LocalAddr().String(),
-						Transactions: fake.FakeBatchTx(1, 1, r, i),
+						Transactions: fake.FakeBatchTx(2048, 1, r, i),
 					}
 					reqJson, _ := json.Marshal(req)
 
@@ -78,7 +78,7 @@ func main() {
 				<-sendCh
 			}
 		}
-		time.Sleep(400 * time.Millisecond)
+		time.Sleep(800 * time.Millisecond)
 	}
 
 	for i := 0; i < *n; i++ {

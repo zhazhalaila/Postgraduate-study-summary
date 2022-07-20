@@ -6,7 +6,9 @@ import (
 	"errors"
 	"log"
 	"math"
+	"math/rand"
 	"net"
+	"time"
 
 	"github.com/zhazhalaila/PipelineBFT/src/message"
 )
@@ -70,10 +72,10 @@ func NewNetworkTransport(logger *log.Logger, port string) *NetworkTransport {
 	nt.logOutCh = make(chan string, 100)
 	nt.peerRegisterCh = make(chan peer, 100)
 	nt.unRegisterPeerCh = make(chan int, 100)
-	nt.consumeCh = make(chan message.Entrance, 10000)
-	nt.outBroadcastCh = make(chan interface{}, 10000)
-	nt.outSingleCh = make(chan peerData, 10000)
-	nt.resultCh = make(chan interface{}, 100)
+	nt.consumeCh = make(chan message.Entrance, 100000)
+	nt.outBroadcastCh = make(chan interface{}, 100000)
+	nt.outSingleCh = make(chan peerData, 100000)
+	nt.resultCh = make(chan interface{}, 1000)
 	nt.stopCh = make(chan struct{})
 
 	go nt.inComingManger()
@@ -152,9 +154,12 @@ func (nt *NetworkTransport) ConnectAll(ipAddrs []string) error {
 		w := bufio.NewWriterSize(conn, bufSize)
 		enc := json.NewEncoder(w)
 		// Start a new goroutine to send data
-		outCh := make(chan interface{}, 1000)
-		go func(id int, w *bufio.Writer, enc *json.Encoder, conn net.Conn, outCh chan interface{}) {
+		outCh := make(chan interface{}, 100000)
+		go func(id int, w *bufio.Writer, enc *json.Encoder, outCh chan interface{}) {
 			for msg := range outCh {
+				// Network delay simulation (local server network delay is so low. e.g. under 2 ms)
+				delayTime := rand.Intn(50-1) + 1
+				time.Sleep(time.Duration(delayTime) * time.Millisecond)
 				// Send the msg
 				if err := enc.Encode(msg); err != nil {
 					break
@@ -173,7 +178,7 @@ func (nt *NetworkTransport) ConnectAll(ipAddrs []string) error {
 				nt.unRegisterPeerCh <- id
 			}
 
-		}(id, w, enc, conn, outCh)
+		}(id, w, enc, outCh)
 		nt.peerRegisterCh <- peer{id: id, conn: conn, w: w, enc: enc, outCh: outCh}
 	}
 	return nil

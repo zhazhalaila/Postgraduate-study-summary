@@ -534,7 +534,8 @@ func (e *Epoch) decideOut(batchSize int) {
 	e.elapsedTime = time.Since(e.startTime)
 	e.logger.Printf("\n [Epoch:%d] [K:%d] [Batchsize:%d] within [%d] millseconds.\n",
 		e.epoch, e.maxRound, batchSize, e.elapsedTime.Milliseconds())
-	e.logger.Printf("[Epoch:%d] receive [%d]bytes.\n", e.epoch, e.bytesCount)
+	e.logger.Printf("\n[Epoch:%d] [K:%d] [Batchsize:%d] receive [%d]bytes.\n",
+		e.epoch, e.maxRound, batchSize, e.bytesCount)
 
 	select {
 	case <-e.stop:
