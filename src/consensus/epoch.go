@@ -375,6 +375,8 @@ func (e *Epoch) handlePBOut(pbOut PBOutput) {
 }
 
 func (e *Epoch) broadcastPath() {
+	e.logger.Printf("[Epoch:%d] [Peer:%d] txs done within [%d] millseconds.\n",
+		e.epoch, e.id, time.Since(e.startTime).Milliseconds())
 	e.logger.Printf("[Epoch:%d] [Candidate:%d] broadcast Path.\n", e.epoch, e.id)
 	qcs := e.path.GetQC()
 	qcsJson, err := json.Marshal(qcs)

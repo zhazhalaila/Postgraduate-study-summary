@@ -31,6 +31,11 @@ type ABA struct {
 	lotteries int
 	round     int
 
+	activate bool
+
+	startTime   time.Time
+	elapsedTime time.Duration
+
 	// estimate value
 	est int
 
@@ -195,7 +200,13 @@ func (aba *ABA) handleMsg(entrance message.ABAEntrance) {
 // ABA event handler
 func (aba *ABA) run() {
 	defer func() {
-		aba.logger.Printf("[Epoch:%d] [Lotteries:%d] ABA exit.\n", aba.epoch, aba.lotteries)
+		aba.elapsedTime = time.Since(aba.startTime)
+		if aba.activate {
+			aba.logger.Printf("[Epoch:%d] [Lotteries:%d] ABA exit within [%d] millseconds.\n",
+				aba.epoch, aba.lotteries, aba.elapsedTime.Milliseconds())
+		} else {
+			aba.logger.Printf("[Epoch:%d] [Lotteries:%d] ABA exit\n", aba.epoch, aba.lotteries)
+		}
 		aba.done <- struct{}{}
 	}()
 
@@ -205,6 +216,8 @@ func (aba *ABA) run() {
 		aba.logger.Printf("[Epoch:%d] [ABAInstanceId:%d] capture exit signal.\n", aba.epoch, aba.lotteries)
 		return
 	case aba.est = <-aba.input:
+		aba.startTime = time.Now()
+		aba.activate = true
 	}
 
 	aba.mu.Lock()
